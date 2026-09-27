@@ -1,0 +1,4 @@
+- insert:
+    - id: review-gate
+      name: dsh-review-gate
+      config: {}
