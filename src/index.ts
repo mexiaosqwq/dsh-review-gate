@@ -16,7 +16,9 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, join as joinPath } from 'node:path'
+import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 // Type-only imports pull the host event-name augmentations into cordis Context.
 import type {} from '@deepseek-ai/dsh-agent'
@@ -49,6 +51,8 @@ export interface ReviewGateConfig {
   readonly maxChain: number
   /** Tool names whose executions count as code writes. bash is deliberately excluded. */
   readonly writeTools: readonly string[]
+  /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
+  readonly receiptDir?: string
 }
 
 export const Config = z.object({
@@ -57,6 +61,7 @@ export const Config = z.object({
   fullAtLines: z.number().min(1).default(150),
   maxChain: z.number().min(1).default(2),
   writeTools: z.array(z.string()).default(['write', 'edit']),
+  receiptDir: z.string(),
 })
 
 export type ReviewAction = 'skip' | 'micro' | 'full'
@@ -90,6 +95,23 @@ export function trackWrite(
 }
 
 const execFileP = promisify(execFile)
+
+/** Default receipt audit-log directory (playwright-plugin storage convention). */
+const RECEIPT_DIR = joinPath(homedir(), '.dsh', 'storages', 'review-gate')
+
+/**
+ * Append one receipt as a JSON line. Audit must never break the turn: every
+ * failure is swallowed.
+ */
+export async function appendReceipt(dir: string, receipt: Record<string, unknown>): Promise<void> {
+  try {
+    await mkdir(dir, { recursive: true })
+    await appendFile(joinPath(dir, 'receipts.jsonl'), JSON.stringify({ ts: Date.now(), ...receipt }) + '\n')
+  } catch {
+    // ponytail: audit failures are silent — an audit log must never interrupt
+    // a review; real diagnosis reads the file directly
+  }
+}
 
 /**
  * Evidence for the review: the git diff of the touched files, or null when no
@@ -380,13 +402,23 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
             files: string[]
             findings?: unknown[]
             fixes_made: boolean
+            summary: string
           }
-          const state = exec?.agent?.id ? states.get(exec.agent.id) : undefined
+          const agentId = exec?.agent?.id
+          const state = agentId ? states.get(agentId) : undefined
           if (!state || !state.pendingReview) {
             return '（当前无待复审回合，回执忽略）'
           }
           state.acknowledged = true
           const findings = a.findings?.length ?? 0
+          await appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
+            agentId,
+            action: a.action,
+            files: a.files,
+            findings,
+            fixes_made: a.fixes_made,
+            summary: a.summary,
+          })
           return `复审回执已登记（${a.action}，${a.files.length} 文件，findings ${findings} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
         },
       }),

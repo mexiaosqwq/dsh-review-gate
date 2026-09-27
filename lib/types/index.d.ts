@@ -27,6 +27,8 @@ export interface ReviewGateConfig {
     readonly maxChain: number;
     /** Tool names whose executions count as code writes. bash is deliberately excluded. */
     readonly writeTools: readonly string[];
+    /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
+    readonly receiptDir?: string;
 }
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
@@ -34,12 +36,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     fullAtLines: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
+    receiptDir: z<string, string, "plain">;
 }>>, Schemastery.ObjectT<NoInfer<{
     mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
     fullAtLines: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
+    receiptDir: z<string, string, "plain">;
 }>>, "plain">;
 export type ReviewAction = 'skip' | 'micro' | 'full';
 /** Decide whether the closing turn owes a review, and at what depth. */
@@ -50,6 +54,11 @@ export declare function decideReview(input: {
 }): ReviewAction;
 /** Record one tool execution as a code write when its tool is a tracked write tool. */
 export declare function trackWrite(files: Set<string>, toolName: string, args: unknown, config: Pick<ReviewGateConfig, 'writeTools'>): void;
+/**
+ * Append one receipt as a JSON line. Audit must never break the turn: every
+ * failure is swallowed.
+ */
+export declare function appendReceipt(dir: string, receipt: Record<string, unknown>): Promise<void>;
 /**
  * Evidence for the review: the git diff of the touched files, or null when no
  * git repo / git failure / empty diff. Truncated to 300 lines so a huge change

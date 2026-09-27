@@ -570,3 +570,36 @@ test('assemble: review section carries the diff evidence and line count upgrades
   assert.ok(section.text.includes('diff'), 'section carries diff evidence')
   assert.match(section.text, /\+1/, 'diff body contains the added line')
 })
+
+// ---- v2 Task 3: receipts persisted to a JSONL audit log ----
+
+import fs from 'node:fs/promises'
+
+test('appendReceipt: appends one JSON line; write failure is swallowed', async () => {
+  const { appendReceipt } = await import('../lib/index.js')
+  const dir = await mkdtemp(join(_tmpdir(), 'rg-audit-'))
+  await appendReceipt(dir, { action: 'micro', files: ['/a.ts'], findings: 0 })
+  const line = (await fs.readFile(join(dir, 'receipts.jsonl'), 'utf8')).trim()
+  assert.deepEqual(JSON.parse(line).files, ['/a.ts'], 'receipt line persisted')
+  // 目录路径指向一个文件 → appendFile 报 ENOTDIR，必须被吞掉
+  await assert.doesNotReject(
+    appendReceipt(join(dir, 'receipts.jsonl'), { action: 'full', files: [], findings: 0 }),
+  )
+})
+
+test('ack: receipt lands in the audit log', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = join(_tmpdir(), 'review-gate-test')
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  const agent = { id: 'audit', steer: () => {} }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+  const line = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim()
+  const rec = JSON.parse(line)
+  assert.equal(rec.action, 'micro')
+  assert.equal(rec.agentId, 'audit')
+  // 清理测试残留，防止跨测试串读
+  await fs.rm(receiptDir, { recursive: true, force: true })
+})
