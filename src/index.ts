@@ -23,6 +23,7 @@ import { promisify } from 'node:util'
 // Type-only imports pull the host event-name augmentations into cordis Context.
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-fs'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 
 /**
@@ -47,10 +48,14 @@ export interface ReviewGateConfig {
   readonly fullAtFiles: number
   /** At or above this many added/removed diff lines, the pending instruction escalates to `full`. */
   readonly fullAtLines: number
+  /** Cumulative session files since the last full review that force a milestone audit. */
+  readonly milestoneAtFiles: number
   /** Maximum consecutive review turns (review found a bug, agent fixed it, gate fires again). */
   readonly maxChain: number
   /** Tool names whose executions count as code writes. bash is deliberately excluded. */
   readonly writeTools: readonly string[]
+  // Glob patterns (e.g. '**' + '/*.md') whose writes never arm the gate.
+  readonly ignoreGlobs: readonly string[]
   /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
   readonly receiptDir?: string
 }
@@ -59,8 +64,10 @@ export const Config = z.object({
   mode: z.union(['off', 'micro', 'full', 'auto']).default('auto'),
   fullAtFiles: z.number().min(1).default(3),
   fullAtLines: z.number().min(1).default(150),
+  milestoneAtFiles: z.number().min(1).default(10),
   maxChain: z.number().min(1).default(2),
   writeTools: z.array(z.string()).default(['write', 'edit']),
+  ignoreGlobs: z.array(z.string()).default([]),
   receiptDir: z.string(),
 })
 
@@ -71,16 +78,39 @@ export function decideReview(input: {
   writeFiles: number
   /** A bash command matched the write-pattern heuristic (no file path known). */
   bashWrites?: boolean
+  /** Cumulative session files since the last full review — drift toward a milestone audit. */
+  sessionFiles?: number
   chain: number
-  config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'maxChain'>
+  config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain'>
 }): ReviewAction {
-  const { writeFiles, bashWrites, chain, config } = input
+  const { writeFiles, bashWrites, sessionFiles, chain, config } = input
   if (writeFiles === 0 && !bashWrites) return 'skip'
   if (config.mode === 'off') return 'skip'
   if (chain >= config.maxChain) return 'skip'
   if (config.mode === 'micro') return 'micro'
   if (config.mode === 'full') return 'full'
-  return writeFiles >= config.fullAtFiles ? 'full' : 'micro'
+  const drifted = (sessionFiles ?? 0) >= config.milestoneAtFiles
+  return writeFiles >= config.fullAtFiles || drifted ? 'full' : 'micro'
+}
+
+/**
+ * Minimal glob to RegExp for ignoreGlobs: double-star spans directories (and
+ * the slash before it is optional), single-star stays within one segment. A
+ * literal question-mark wildcard is NOT supported — it would collide with the
+ * quantifier character that the globstar expansion introduces (real bug
+ * caught by the glob round-trip check); add an explicit pattern instead.
+ */
+export function globToRegExp(glob: string): RegExp {
+  const body = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\//g, '(?:.*/)?')
+    .replace(/\*\*/g, '.*')
+    .replace(/\*/g, '[^/]*')
+  return new RegExp(`^${body}$`)
+}
+
+function isIgnored(path: string, globs: readonly string[]): boolean {
+  return globs.some((g) => globToRegExp(g).test(path))
 }
 
 /**
@@ -96,11 +126,12 @@ export function trackWrite(
   files: Set<string>,
   toolName: string,
   args: unknown,
-  config: Pick<ReviewGateConfig, 'writeTools'>,
+  config: Pick<ReviewGateConfig, 'writeTools' | 'ignoreGlobs'>,
 ): void {
   if (!config.writeTools.includes(toolName)) return
   const filePath = (args as { file_path?: unknown } | undefined)?.file_path
   if (typeof filePath !== 'string' || filePath === '') return
+  if (isIgnored(filePath, config.ignoreGlobs)) return
   files.add(filePath)
 }
 
@@ -168,7 +199,7 @@ const FULL_TEXT = (files: number) =>
   `[review-gate] 本回合已改动 ${files} 个文件。收尾流程：给出最终总结之前，先执行全面复审，逐项完成：\n` +
   `0. 先列出本次改动文件清单（从 diff 读出），作为后续每步的检查范围\n` +
   `1. diff 全读：逐行读本次全部改动，以审别人代码的心态专找复制粘贴改漏、改名后残留旧引用、条件写反、边界漏判\n` +
-  `2. 爆炸半径：对改动的每个函数/接口 grep 全部调用方，确认签名/语义变化没有漏改下游（含隐式契约：数据格式、事件顺序、状态约定）\n` +
+  `2. 爆炸半径：对改动的每个函数/接口 grep 全部调用方，确认签名/语义变化没有漏改下游（含隐式契约：数据格式、事件顺序、状态约定）；并追踪关键数据流——从输入 source 到落盘/响应 sink 的路径逐点核对类型与校验\n` +
   `3. 测试批判：①测试和实现是否共享同一错误假设 ②有没有路径根本没被测到（边界/异常/并发/空值）③断言是真断言还是恒真\n` +
   `4. 回归面：跑全量相关测试 + 构建，不只跑本次新写的测试\n` +
   `5. 规格对照：改动是否完整覆盖需求，有无擅自缩水或加料\n` +
@@ -194,6 +225,8 @@ export function buildReviewMessage(action: 'micro' | 'full', fileCount: number):
 export interface GateState {
   files: Set<string>
   chain: number
+  /** Cumulative files this session since the last full review (milestone drift). */
+  sessionFiles: number
   /** A bash command matched BASH_WRITE_RE during the open turn. */
   bashWrites: boolean
   /** The matched bash commands (<= 5), shown to the reviewing model. */
@@ -215,6 +248,7 @@ export function createState(): GateState {
   return {
     files: new Set(),
     chain: 0,
+    sessionFiles: 0,
     bashWrites: false,
     bashCommands: [],
     pendingReview: null,
@@ -269,6 +303,8 @@ export function handleTurnStopping(
     if (state.acknowledged) {
       state.pendingReview = null
       clearTurnWrites(state)
+      // A completed full audit settles the session's cumulative drift.
+      if (action === 'full') state.sessionFiles = 0
       state.chain = 0
       return action
     }
@@ -307,6 +343,32 @@ export const inject = ['tools']
 
 export function apply(ctx: Context, config: ReviewGateConfig): void {
   const states = new Map<string, GateState>()
+
+  // Grade immediately so the instruction leads the wrap-up: the model sees
+  // "review before your final summary" while still working. Shared by both
+  // signal sources (tools/result and fs intents).
+  const gradeAndArm = (state: GateState): void => {
+    const action = decideReview({
+      writeFiles: state.files.size,
+      bashWrites: state.bashWrites,
+      sessionFiles: state.sessionFiles,
+      chain: state.chain,
+      config,
+    })
+    if (action === 'skip') {
+      state.pendingReview = null
+    } else {
+      state.pendingReview = {
+        action,
+        files: state.files.size || (state.bashWrites ? 1 : 0),
+        paths: [...state.files],
+      }
+      // Every fresh write invalidates any prior receipt: new changes owe a
+      // new review.
+      state.acknowledged = false
+    }
+  }
+
   ctx.effect(function* () {
     yield ctx.on('tools/result', (exec: { name: string; arguments: unknown; agent?: { id: string } }) => {
       if (!exec?.agent?.id) return
@@ -315,6 +377,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         state = createState()
         states.set(exec.agent.id, state)
       }
+      const filesBefore = state.files.size
       trackWrite(state.files, exec.name, exec.arguments, config)
       // bash write-pattern heuristic: a redirected/moving/removing command very
       // likely wrote somewhere we cannot track — arm a review for it.
@@ -325,26 +388,10 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           if (state.bashCommands.length < 5) state.bashCommands.push(command)
         }
       }
-      // Grade immediately on each write so the instruction leads the wrap-up:
-      // the model sees "review before your final summary" while still working.
-      const action = decideReview({
-        writeFiles: state.files.size,
-        bashWrites: state.bashWrites,
-        chain: state.chain,
-        config,
-      })
-      if (action === 'skip') {
-        state.pendingReview = null
-      } else {
-        state.pendingReview = {
-          action,
-          files: state.files.size || (state.bashWrites ? 1 : 0),
-          paths: [...state.files],
-        }
-        // Every fresh write invalidates any prior receipt: new changes owe a
-        // new review.
-        state.acknowledged = false
-      }
+      // Milestone drift: only a NEW path counts (the fs-intent listener may
+      // have added it first — Set growth is the dedup gate).
+      if (state.files.size > filesBefore) state.sessionFiles += 1
+      gradeAndArm(state)
     })
 
     yield ctx.on(
@@ -410,6 +457,38 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         return out
       },
     )
+
+    // Filesystem-level write signals: fs/write-intent and fs/edit-intent fire
+    // for EVERY tool that goes through the FileSystem service (write, edit,
+    // and any future/MCP fs-backed tool), regardless of tool name. An observer
+    // MUST return next()'s result — dropping it would skip peer listeners
+    // (e.g. the observation policy) and blocking would lose user data.
+    const trackFsIntent = (
+      target: { displayPath: string },
+      actor: { agent?: { id: string } } | undefined,
+    ): void => {
+      if (!actor?.agent?.id) return
+      // fs-intent fires BEFORE tools/result (intent → execute → result), so it
+      // is often the FIRST signal for a file: create the state here.
+      let state = states.get(actor.agent.id)
+      if (!state) {
+        state = createState()
+        states.set(actor.agent.id, state)
+      }
+      if (isIgnored(target.displayPath, config.ignoreGlobs)) return
+      const before = state.files.size
+      state.files.add(target.displayPath)
+      if (state.files.size > before) state.sessionFiles += 1
+      gradeAndArm(state)
+    }
+    yield ctx.on('fs/write-intent', async (target, actor, next) => {
+      trackFsIntent(target, actor)
+      return next()
+    })
+    yield ctx.on('fs/edit-intent', async (target, actor, next) => {
+      trackFsIntent(target, actor)
+      return next()
+    })
   }, 'review-gate listeners')
 
   // The receipt tool: the model calls it after finishing the review demanded by
@@ -480,6 +559,14 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           findings,
           fixes_made: a.fixes_made,
           summary: a.summary,
+          cost: {
+            // Qoder-style transparency: what this review cost to demand.
+            intercepts: state.chain,
+            sessionFiles: state.sessionFiles,
+            diffLines: state.pendingReview.diffText
+              ? state.pendingReview.diffText.split('\n').length
+              : 0,
+          },
         })
         return `复审回执已登记（${a.action}，${a.files.length} 文件，findings ${findings} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
       },

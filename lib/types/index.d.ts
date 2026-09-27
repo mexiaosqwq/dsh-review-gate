@@ -23,10 +23,13 @@ export interface ReviewGateConfig {
     readonly fullAtFiles: number;
     /** At or above this many added/removed diff lines, the pending instruction escalates to `full`. */
     readonly fullAtLines: number;
+    /** Cumulative session files since the last full review that force a milestone audit. */
+    readonly milestoneAtFiles: number;
     /** Maximum consecutive review turns (review found a bug, agent fixed it, gate fires again). */
     readonly maxChain: number;
     /** Tool names whose executions count as code writes. bash is deliberately excluded. */
     readonly writeTools: readonly string[];
+    readonly ignoreGlobs: readonly string[];
     /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
     readonly receiptDir?: string;
 }
@@ -34,15 +37,19 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
     fullAtLines: z<number, number, "defined">;
+    milestoneAtFiles: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
+    ignoreGlobs: z<string[], string[], "defined">;
     receiptDir: z<string, string, "plain">;
 }>>, Schemastery.ObjectT<NoInfer<{
     mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
     fullAtLines: z<number, number, "defined">;
+    milestoneAtFiles: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
+    ignoreGlobs: z<string[], string[], "defined">;
     receiptDir: z<string, string, "plain">;
 }>>, "plain">;
 export type ReviewAction = 'skip' | 'micro' | 'full';
@@ -51,9 +58,19 @@ export declare function decideReview(input: {
     writeFiles: number;
     /** A bash command matched the write-pattern heuristic (no file path known). */
     bashWrites?: boolean;
+    /** Cumulative session files since the last full review — drift toward a milestone audit. */
+    sessionFiles?: number;
     chain: number;
-    config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'maxChain'>;
+    config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain'>;
 }): ReviewAction;
+/**
+ * Minimal glob to RegExp for ignoreGlobs: double-star spans directories (and
+ * the slash before it is optional), single-star stays within one segment. A
+ * literal question-mark wildcard is NOT supported — it would collide with the
+ * quantifier character that the globstar expansion introduces (real bug
+ * caught by the glob round-trip check); add an explicit pattern instead.
+ */
+export declare function globToRegExp(glob: string): RegExp;
 /**
  * bash commands that very likely wrote to the filesystem. bash process writes
  * bypass the FileSystem service entirely, so this command-pattern heuristic is
@@ -61,7 +78,7 @@ export declare function decideReview(input: {
  */
 export declare const BASH_WRITE_RE: RegExp;
 /** Record one tool execution as a code write when its tool is a tracked write tool. */
-export declare function trackWrite(files: Set<string>, toolName: string, args: unknown, config: Pick<ReviewGateConfig, 'writeTools'>): void;
+export declare function trackWrite(files: Set<string>, toolName: string, args: unknown, config: Pick<ReviewGateConfig, 'writeTools' | 'ignoreGlobs'>): void;
 /**
  * Append one receipt as a JSON line. Audit must never break the turn: every
  * failure is swallowed.
@@ -83,6 +100,8 @@ export declare function buildReviewMessage(action: 'micro' | 'full', fileCount: 
 export interface GateState {
     files: Set<string>;
     chain: number;
+    /** Cumulative files this session since the last full review (milestone drift). */
+    sessionFiles: number;
     /** A bash command matched BASH_WRITE_RE during the open turn. */
     bashWrites: boolean;
     /** The matched bash commands (<= 5), shown to the reviewing model. */

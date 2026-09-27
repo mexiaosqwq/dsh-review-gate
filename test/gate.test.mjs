@@ -12,8 +12,10 @@ const baseConfig = {
   mode: 'auto',
   fullAtFiles: 3,
   fullAtLines: 150,
+  milestoneAtFiles: 10,
   maxChain: 2,
   writeTools: ['write', 'edit'],
+  ignoreGlobs: [],
 }
 
 test('decideReview: no writes -> skip', () => {
@@ -255,7 +257,7 @@ test('apply: effect dispose unregisters all listeners', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
   apply(ctx, baseConfig)
-  assert.equal(ctx.effectDisposers.length, 5, 'five listeners yielded as disposers (tool registration collects itself via the plugin context)')
+  assert.equal(ctx.effectDisposers.length, 7, 'five core listeners + two fs-intent listeners yielded as disposers (tool registration collects itself via the plugin context)')
   assert.equal(ctx.listeners.get('agent/turn-stopping').length, 1)
   for (const d of ctx.effectDisposers) d()
   for (const event of ['tools/result', 'agent/turn-stopping', 'agent/disposed']) {
@@ -639,4 +641,79 @@ test('apply: harmless bash command does not arm the gate', async () => {
   ctx.emit('tools/result', { name: 'bash', arguments: { command: 'cat /tmp/patch.txt' }, agent })
   ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
   assert.equal(steered.length, 0, 'cat alone never arms the gate')
+})
+
+// ---- v3: signal layer (fs-intent), noise filter, milestone audit, cost meter ----
+
+test('apply: fs/write-intent passes through next() and tracks displayPath', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const steered = []
+  const agent = { id: 'fsi', steer: (m) => steered.push(m) }
+  const listener = ctx.listeners.get('fs/write-intent')?.[0]
+  assert.ok(listener, 'fs/write-intent listener registered')
+  let nextCalled = false
+  await listener({ targetKey: '/x.ts', displayPath: '/x.ts' }, { agent }, () => { nextCalled = true })
+  assert.ok(nextCalled, 'waterfall must pass through — blocking writes would lose data')
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 1, 'fs write-intent arms the gate')
+})
+
+test('apply: fs/edit-intent also tracks without blocking', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const steered = []
+  const agent = { id: 'fei', steer: (m) => steered.push(m) }
+  const listener = ctx.listeners.get('fs/edit-intent')?.[0]
+  assert.ok(listener, 'fs/edit-intent listener registered')
+  await listener({ targetKey: '/y.ts', displayPath: '/y.ts' }, { agent }, () => ({ version: 'v1' }))
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 1, 'fs edit-intent arms the gate')
+})
+
+test('ignoreGlobs: matched paths never arm the gate', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, { ...baseConfig, ignoreGlobs: ['**/*.md', '**/pnpm-lock.yaml'] })
+  const steered = []
+  const agent = { id: 'ig', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/p/README.md' }, agent })
+  ctx.emit('tools/result', { name: 'edit', arguments: { file_path: '/p/pnpm-lock.yaml' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 0, 'docs and lockfiles are noise, not code')
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/p/a.ts' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 1, 'code still arms')
+})
+
+test('milestone: cumulative files since last full review force full depth', async () => {
+  const { decideReview } = await import('../lib/index.js')
+  assert.equal(
+    decideReview({ writeFiles: 3, sessionFiles: 12, chain: 0, config: baseConfig }),
+    'full',
+    'cumulative drift triggers a milestone audit',
+  )
+  // 1 file alone grades micro (1 < fullAtFiles 3) even with 9 accumulated.
+  assert.equal(decideReview({ writeFiles: 1, sessionFiles: 9, chain: 0, config: baseConfig }), 'micro')
+})
+
+test('ack: receipt carries cost fields for transparency', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await fs.mkdtemp(join(_tmpdir(), 'rg-cost-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  const agent = { id: 'cost', steer: () => {} }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+  const rec = JSON.parse((await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim())
+  assert.ok('cost' in rec, 'receipt records review cost (Qoder-style transparency)')
+  await fs.rm(receiptDir, { recursive: true, force: true })
+})
+
+test('full instruction includes data-flow tracing step', async () => {
+  const { reviewInstructionText } = await import('../lib/index.js')
+  assert.ok(reviewInstructionText('full', 1).includes('数据流'), 'full audit traces source→sink data flow')
 })
