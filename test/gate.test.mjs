@@ -11,6 +11,7 @@ import {
 const baseConfig = {
   mode: 'auto',
   fullAtFiles: 3,
+  fullAtLines: 150,
   maxChain: 2,
   writeTools: ['write', 'edit'],
 }
@@ -516,4 +517,56 @@ test('ack: instruction text demands the receipt call', async () => {
   }
   const { DRIVER_HINT } = await import('../lib/index.js')
   assert.ok(DRIVER_HINT.includes('review_acknowledge'), 'driver points at the receipt tool')
+})
+
+// ---- v2 Task 2: git-diff evidence injected into the review instruction ----
+
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { execFile as _execFile } from 'node:child_process'
+import { promisify as _promisify } from 'node:util'
+import { tmpdir as _tmpdir } from 'node:os'
+const runGit = _promisify(_execFile)
+
+async function mkdtempGitRepo() {
+  const dir = await mkdtemp(join(_tmpdir(), 'rg-git-'))
+  await runGit('git', ['-C', dir, 'init'])
+  await runGit('git', ['-C', dir, 'config', 'user.email', 't@t'])
+  await runGit('git', ['-C', dir, 'config', 'user.name', 't'])
+  await writeFile(join(dir, 'a.txt'), 'base\n')
+  await runGit('git', ['-C', dir, 'add', '.'])
+  await runGit('git', ['-C', dir, 'commit', '-m', 'base'])
+  await writeFile(join(dir, 'a.txt'), 'base\nnew line\n')
+  return dir
+}
+
+test('collectDiff: git repo returns a diff, non-git dir returns null', async () => {
+  const { collectDiff } = await import('../lib/index.js')
+  const dir = await mkdtempGitRepo()
+  const diff = await collectDiff([join(dir, 'a.txt')])
+  assert.ok(diff, 'git repo should yield a diff')
+  assert.match(diff, /\+new line/)
+  const plain = await mkdtemp(join(_tmpdir(), 'rg-plain-'))
+  await writeFile(join(plain, 'x.txt'), 'x')
+  assert.equal(await collectDiff([join(plain, 'x.txt')]), null, 'non-git dir -> null')
+})
+
+test('assemble: review section carries the diff evidence and line count upgrades to full', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const dir = await mkdtempGitRepo()
+  // 6 changed lines against a fullAtLines of 5
+  await writeFile(join(dir, 'a.txt'), 'base\n1\n2\n3\n4\n5\n6\n')
+  const cfg = { ...baseConfig, fullAtLines: 5 }
+  apply(ctx, cfg)
+  const agent = { id: 'dif', steer: () => {} }
+  ctx.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent })
+  const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+  const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+  const out = await listener(assembly, { agent }, async () => assembly)
+  const section = out.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(section, 'section injected')
+  assert.ok(section.text.includes('全面复审'), '6 changed lines >= fullAtLines(5) upgrades to full')
+  assert.ok(section.text.includes('diff'), 'section carries diff evidence')
+  assert.match(section.text, /\+1/, 'diff body contains the added line')
 })

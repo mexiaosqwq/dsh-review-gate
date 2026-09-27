@@ -14,6 +14,10 @@ import type { ContextFormed, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
+import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, join as joinPath } from 'node:path'
+import { promisify } from 'node:util'
 // Type-only imports pull the host event-name augmentations into cordis Context.
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -39,6 +43,8 @@ export interface ReviewGateConfig {
   readonly mode: ReviewMode
   /** At or above this many changed files, `auto` grades a turn as `full`. */
   readonly fullAtFiles: number
+  /** At or above this many added/removed diff lines, the pending instruction escalates to `full`. */
+  readonly fullAtLines: number
   /** Maximum consecutive review turns (review found a bug, agent fixed it, gate fires again). */
   readonly maxChain: number
   /** Tool names whose executions count as code writes. bash is deliberately excluded. */
@@ -48,6 +54,7 @@ export interface ReviewGateConfig {
 export const Config = z.object({
   mode: z.union(['off', 'micro', 'full', 'auto']).default('auto'),
   fullAtFiles: z.number().min(1).default(3),
+  fullAtLines: z.number().min(1).default(150),
   maxChain: z.number().min(1).default(2),
   writeTools: z.array(z.string()).default(['write', 'edit']),
 })
@@ -80,6 +87,46 @@ export function trackWrite(
   const filePath = (args as { file_path?: unknown } | undefined)?.file_path
   if (typeof filePath !== 'string' || filePath === '') return
   files.add(filePath)
+}
+
+const execFileP = promisify(execFile)
+
+/**
+ * Evidence for the review: the git diff of the touched files, or null when no
+ * git repo / git failure / empty diff. Truncated to 300 lines so a huge change
+ * cannot blow up the context.
+ */
+export async function collectDiff(files: readonly string[]): Promise<string | null> {
+  const first = files[0]
+  if (!first) return null
+  let dir = dirname(first)
+  let root: string | null = null
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(joinPath(dir, '.git'))) {
+      root = dir
+      break
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  if (!root) return null
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['-C', root, 'diff', 'HEAD', '--', ...files],
+      { timeout: 2000, maxBuffer: 4 << 20 },
+    )
+    if (!stdout.trim()) return null
+    const lines = stdout.split('\n')
+    // ponytail: fixed 300-line cap — a reviewer re-runs git diff for the tail
+    if (lines.length > 300) {
+      return lines.slice(0, 300).join('\n') + '\n…（已截断，完整 diff 请自行 git diff）'
+    }
+    return stdout
+  } catch {
+    return null
+  }
 }
 
 const MICRO_TEXT = (files: number) =>
@@ -116,7 +163,14 @@ export interface GateState {
   files: Set<string>
   chain: number
   /** While set, the assemble listener injects the review instruction as a runtime-context section. */
-  pendingReview: { action: 'micro' | 'full'; files: number } | null
+  pendingReview: {
+    action: 'micro' | 'full'
+    files: number
+    /** Absolute paths snapshotted at arm time (state.files is cleared on interception). */
+    paths: string[]
+    /** Cached diff evidence; '' means "probed, none available". */
+    diffText?: string
+  } | null
   /** Set by the review_acknowledge tool — the sole review-completion signal. */
   acknowledged: boolean
 }
@@ -212,7 +266,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       if (action === 'skip') {
         state.pendingReview = null
       } else {
-        state.pendingReview = { action, files: state.files.size }
+        state.pendingReview = { action, files: state.files.size, paths: [...state.files] }
         // Every fresh write invalidates any prior receipt: new changes owe a
         // new review.
         state.acknowledged = false
@@ -250,9 +304,28 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         const out = await next()
         const state = context.agent?.id ? states.get(context.agent.id) : undefined
         if (state?.pendingReview) {
+          const p = state.pendingReview
+          // Lazy evidence probe, once per armed review ('' = probed, nothing).
+          if (p.diffText === undefined) {
+            p.diffText = (await collectDiff(p.paths)) ?? ''
+          }
+          // Line-count escalation: a small file count can still be a big diff.
+          if (p.diffText && p.action === 'micro') {
+            const changed = p.diffText
+              .split('\n')
+              .filter(
+                (l) =>
+                  (l.startsWith('+') && !l.startsWith('+++')) ||
+                  (l.startsWith('-') && !l.startsWith('---')),
+              ).length
+            if (changed >= config.fullAtLines) p.action = 'full'
+          }
+          const diffSection = p.diffText
+            ? `\n\n### 本回合改动 diff（HEAD 起）\n\`\`\`diff\n${p.diffText}\n\`\`\``
+            : '\n\n（非 git 环境：请对照你本回合的编辑记录复审）'
           out.contexts.push({
             name: 'review-gate',
-            text: reviewInstructionText(state.pendingReview.action, state.pendingReview.files),
+            text: reviewInstructionText(p.action, p.files) + diffSection,
           })
         }
         return out

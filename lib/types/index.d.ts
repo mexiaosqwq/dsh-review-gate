@@ -21,6 +21,8 @@ export interface ReviewGateConfig {
     readonly mode: ReviewMode;
     /** At or above this many changed files, `auto` grades a turn as `full`. */
     readonly fullAtFiles: number;
+    /** At or above this many added/removed diff lines, the pending instruction escalates to `full`. */
+    readonly fullAtLines: number;
     /** Maximum consecutive review turns (review found a bug, agent fixed it, gate fires again). */
     readonly maxChain: number;
     /** Tool names whose executions count as code writes. bash is deliberately excluded. */
@@ -29,11 +31,13 @@ export interface ReviewGateConfig {
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
+    fullAtLines: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
+    fullAtLines: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
 }>>, "plain">;
@@ -46,6 +50,12 @@ export declare function decideReview(input: {
 }): ReviewAction;
 /** Record one tool execution as a code write when its tool is a tracked write tool. */
 export declare function trackWrite(files: Set<string>, toolName: string, args: unknown, config: Pick<ReviewGateConfig, 'writeTools'>): void;
+/**
+ * Evidence for the review: the git diff of the touched files, or null when no
+ * git repo / git failure / empty diff. Truncated to 300 lines so a huge change
+ * cannot blow up the context.
+ */
+export declare function collectDiff(files: readonly string[]): Promise<string | null>;
 /**
  * Legacy single-message form (instruction inside one folded context row).
  * Kept for compatibility; the live gate uses buildDriverMessage + assemble
@@ -60,6 +70,10 @@ export interface GateState {
     pendingReview: {
         action: 'micro' | 'full';
         files: number;
+        /** Absolute paths snapshotted at arm time (state.files is cleared on interception). */
+        paths: string[];
+        /** Cached diff evidence; '' means "probed, none available". */
+        diffText?: string;
     } | null;
     /** Set by the review_acknowledge tool — the sole review-completion signal. */
     acknowledged: boolean;
