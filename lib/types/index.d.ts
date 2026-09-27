@@ -61,10 +61,14 @@ export interface GateState {
         action: 'micro' | 'full';
         files: number;
     } | null;
+    /** Set by the review_acknowledge tool — the sole review-completion signal. */
+    acknowledged: boolean;
 }
 export declare function createState(): GateState;
 /** Full review instruction body — injected as a runtime-context section, never as chat content. */
 export declare function reviewInstructionText(action: 'micro' | 'full', files: number): string;
+/** Minimal driver message: exists to keep the loop running; the instruction rides in the runtime context. */
+export declare const DRIVER_HINT = "(review-gate) \u6536\u5C3E\u590D\u5BA1\u672A\u5B8C\u6210\uFF1A\u8BF7\u6267\u884C\u8FD0\u884C\u65F6\u4E0A\u4E0B\u6587\u4E2D\u7684\u590D\u5BA1\uFF0C\u5B8C\u6210\u540E\u8C03\u7528 review_acknowledge \u56DE\u6267\uFF0C\u7136\u540E\u8F93\u51FA\u6700\u7EC8\u603B\u7ED3\uFF08\u542B\u590D\u5BA1\u7ED3\u8BBA\u4E0E\u672C\u6B21\u4EFB\u52A1\u505A\u4E86\u4EC0\u4E48\uFF09\u3002";
 /**
  * Turn-closing hook: consume the write-time grading (pendingReview) and steer
  * the wrap-up review when one is armed. Depth capping (maxChain) happens at

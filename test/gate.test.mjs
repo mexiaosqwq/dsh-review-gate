@@ -147,8 +147,11 @@ test('handleTurnStopping: consecutive review chain respects maxChain', () => {
 
 function fakeCtx() {
   const listeners = new Map()
+  const registered = []
   const ctx = {
     listeners,
+    registered,
+    tools: { register: (d) => { registered.push(d); return () => {} } },
     on(event, fn) {
       if (!listeners.has(event)) listeners.set(event, [])
       listeners.get(event).push(fn)
@@ -251,7 +254,7 @@ test('apply: effect dispose unregisters all listeners', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
   apply(ctx, baseConfig)
-  assert.equal(ctx.effectDisposers.length, 5, 'five listeners yielded as disposers')
+  assert.equal(ctx.effectDisposers.length, 6, 'five listeners + one tool registration yielded as disposers')
   assert.equal(ctx.listeners.get('agent/turn-stopping').length, 1)
   for (const d of ctx.effectDisposers) d()
   for (const event of ['tools/result', 'agent/turn-stopping', 'agent/disposed']) {
@@ -317,7 +320,8 @@ test('handleTurnStopping: sets pendingReview and steers only a minimal driver me
   const steered = []
   const action = mod.handleTurnStopping(state, (m) => steered.push(m), baseConfig)
   assert.equal(action, 'micro')
-  assert.equal(state.pendingReview, null, 'disarmed once the driver is sent')
+  assert.ok(state.pendingReview, 'pendingReview kept so the driver round can still acknowledge')
+  assert.equal(state.chain, 1, 'chain counted — stop-loss now guards the loop instead of disarming')
   // driver message must NOT contain the full instruction body
   const text = steered[0].content.map((b) => b.text ?? '').join('')
   assert.ok(text.length < 120, `driver is short, got ${text.length}`)
@@ -338,11 +342,12 @@ test('assemble listener injects review instruction as a named context section', 
   const section = pre.contexts.find((c) => c.name === 'review-gate')
   assert.ok(section, 'review-gate context section injected')
   assert.ok(section.text.includes('逐行读'), 'section carries the full instruction')
-  // after the interrupt disarms it: instruction stops
+  // after the interrupt: pendingReview survives, so the reviewing turn's own
+  // requests still carry the instruction
   ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
   const postA = { contexts: [], sections: [], tools: [], variables: {} }
   const post = await listener(postA, { agent }, () => Promise.resolve(postA))
-  assert.equal(post.contexts.find((c) => c.name === 'review-gate'), undefined, 'instruction stops after the driver')
+  assert.ok(post.contexts.find((c) => c.name === 'review-gate'), 'instruction stays live through the reviewing turn (ack pending)')
 })
 
 test('assemble listener injects nothing when no review is pending', async () => {
@@ -355,21 +360,24 @@ test('assemble listener injects nothing when no review is pending', async () => 
   assert.equal(out.contexts.find((c) => c.name === 'review-gate'), undefined)
 })
 
-test('turn-stopping after review turn clears pendingReview', async () => {
+test('unacknowledged closes stop at maxChain and the instruction settles', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
   apply(ctx, baseConfig)
   const steered = []
   const agent = { id: 'clr', steer: (m) => steered.push(m) }
   ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal }) // c1
+  // 复审轮（只读、无 ack）结束 → 给第二轮补审机会，仍拦截（chain=2）
   ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
-  // 复审轮（只读）结束 → 不再拦截，且指令停止注入
+  assert.equal(steered.length, 2, 'reviewing turn without ack gets one more chance')
+  // 连续无视 → maxChain 止损，指令随之消失
   ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
-  assert.equal(steered.length, 1, 'review turn close must NOT steer again (no infinite loop)')
+  assert.equal(steered.length, 2, 'stop-loss caps the chain')
   const assembly = { contexts: [], sections: [], tools: [], variables: {} }
   const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
   const out = await listener(assembly, { agent }, async () => assembly)
-  assert.equal(out.contexts.find((c) => c.name === 'review-gate'), undefined, 'instruction gone after review settles')
+  assert.equal(out.contexts.find((c) => c.name === 'review-gate'), undefined, 'instruction gone after stop-loss settles')
 })
 
 // ---- review as an in-flight wrap-up step, not a post-summary interruption ----
@@ -399,7 +407,7 @@ test('turn-stopping with pending review steers a resume-style driver, not a redo
   ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
   const text = steered[0].content.map((b) => b.text ?? '').join('')
   assert.ok(text.includes('最终总结'), 'driver tells the model the ending must be a summary')
-  assert.ok(text.includes('若尚未') || text.includes('如果尚未') || text.includes('尚未执行'), 'driver is conditional: review if not done, then summarize')
+  assert.ok(text.includes('review_acknowledge'), 'driver routes completion through the receipt tool — ack made it unconditional')
 })
 
 test('escalation: third written file upgrades the pending instruction to full', async () => {
@@ -418,4 +426,94 @@ test('escalation: third written file upgrades the pending instruction to full', 
   const fullA = mk()
   const full = await listener(fullA, { agent }, () => Promise.resolve(fullA))
   assert.ok(full.contexts.find((c) => c.name === 'review-gate').text.includes('全面复审'), 'at threshold -> full audit')
+})
+
+// ---- v2: review_acknowledge receipt tool is the sole review-completion signal ----
+
+function getAck(ctx) {
+  return ctx.registered.find((t) => t.name === 'review_acknowledge')
+}
+
+test('apply: review_acknowledge tool is registered', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  assert.ok(getAck(ctx), 'review_acknowledge registered')
+})
+
+test('ack: acknowledged receipt lets the turn close without interception', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const ack = getAck(ctx)
+  const steered = []
+  const agent = { id: 'ack1', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  const out = await ack.execute(
+    { action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'diff 通读无问题' },
+    { agent },
+  )
+  assert.ok(String(out).includes('回执'), 'receipt acknowledged in tool output')
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 0, 'no interception after acknowledgment')
+})
+
+test('ack: without receipt the gate intercepts but pendingReview survives; late ack then passes', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const ack = getAck(ctx)
+  const steered = []
+  const agent = { id: 'ack2', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'edit', arguments: { file_path: '/a.ts' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal }) // c1
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal }) // c2 — pendingReview kept
+  assert.equal(steered.length, 2, 'both closes intercepted while unacknowledged')
+  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: '补审' }, { agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 2, 'late ack accepted — turn closes')
+})
+
+test('ack: stale receipt invalidated by a fresh write; no pending review -> ignored', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const ack = getAck(ctx)
+  const steered = []
+  const agent = { id: 'ack3', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: '先审' }, { agent })
+  // a) stale ack: a new write re-arms and must reset acknowledged
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/b.ts' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 1, 'fresh write invalidates the stale receipt')
+  // b) no pending review (fresh agent, zero writes): ack is ignored
+  const out = await ack.execute(
+    { action: 'micro', files: [], findings: [], fixes_made: false, summary: '乱调' },
+    { agent: { id: 'ack3b', steer: () => {} } },
+  )
+  assert.ok(String(out).includes('忽略'), 'ack without pending review is ignored')
+})
+
+test('ack: maxChain stop-loss still passes unacknowledged closes', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const steered = []
+  const agent = { id: 'ack4', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal }) // c1
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal }) // c2
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal }) // chain at max -> pass
+  assert.equal(steered.length, 2, 'stop-loss caps interception at maxChain')
+})
+
+test('ack: instruction text demands the receipt call', async () => {
+  const { reviewInstructionText } = await import('../lib/index.js')
+  for (const action of ['micro', 'full']) {
+    const text = reviewInstructionText(action, 1)
+    assert.ok(text.includes('review_acknowledge'), `${action} instruction demands the receipt tool`)
+  }
+  const { DRIVER_HINT } = await import('../lib/index.js')
+  assert.ok(DRIVER_HINT.includes('review_acknowledge'), 'driver points at the receipt tool')
 })

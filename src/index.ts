@@ -12,6 +12,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 // Type-only imports pull the host event-name augmentations into cordis Context.
 import type {} from '@deepseek-ai/dsh-agent'
@@ -82,7 +83,7 @@ export function trackWrite(
 }
 
 const MICRO_TEXT = (files: number) =>
-  `[review-gate] 本回合已改动 ${files} 个文件。收尾流程：完成所有工作后、给出最终总结之前，先执行 L1 快扫（只读排查）——逐行读本次全部 diff，专查复制粘贴改漏、改名后残留旧引用、条件写反、边界漏判；汇报时先列出改动文件清单（从 diff 读出）。发现问题→立即修复。最终总结必须并入复审结论。`
+  `[review-gate] 本回合已改动 ${files} 个文件。收尾流程：完成所有工作后、给出最终总结之前，先执行 L1 快扫（只读排查）——逐行读本次全部 diff，专查复制粘贴改漏、改名后残留旧引用、条件写反、边界漏判；汇报时先列出改动文件清单（从 diff 读出）。发现问题→立即修复。复审完成后调用 review_acknowledge 工具回执（提交 findings 与结论），最终总结必须并入复审结论。`
 
 const FULL_TEXT = (files: number) =>
   `[review-gate] 本回合已改动 ${files} 个文件。收尾流程：给出最终总结之前，先执行全面复审，逐项完成：\n` +
@@ -92,7 +93,7 @@ const FULL_TEXT = (files: number) =>
   `3. 测试批判：①测试和实现是否共享同一错误假设 ②有没有路径根本没被测到（边界/异常/并发/空值）③断言是真断言还是恒真\n` +
   `4. 回归面：跑全量相关测试 + 构建，不只跑本次新写的测试\n` +
   `5. 规格对照：改动是否完整覆盖需求，有无擅自缩水或加料\n` +
-  `发现问题→立即修复并复验；无问题→说明每步查了什么。以只读排查为主，修复仅限复审发现的缺陷。最终总结必须并入复审结论——总结是回合的最后一条消息。`
+  `发现问题→立即修复并复验；无问题→说明每步查了什么。以只读排查为主，修复仅限复审发现的缺陷。全部完成后调用 review_acknowledge 工具回执（action/files/findings/fixes_made/summary），最终总结必须并入复审结论——总结是回合的最后一条消息。`
 
 /**
  * Legacy single-message form (instruction inside one folded context row).
@@ -116,10 +117,12 @@ export interface GateState {
   chain: number
   /** While set, the assemble listener injects the review instruction as a runtime-context section. */
   pendingReview: { action: 'micro' | 'full'; files: number } | null
+  /** Set by the review_acknowledge tool — the sole review-completion signal. */
+  acknowledged: boolean
 }
 
 export function createState(): GateState {
-  return { files: new Set(), chain: 0, pendingReview: null }
+  return { files: new Set(), chain: 0, pendingReview: null, acknowledged: false }
 }
 
 /** Full review instruction body — injected as a runtime-context section, never as chat content. */
@@ -128,11 +131,12 @@ export function reviewInstructionText(action: 'micro' | 'full', files: number): 
 }
 
 /** Minimal driver message: exists to keep the loop running; the instruction rides in the runtime context. */
-const DRIVER_TEXT = '(review-gate) 收尾复审未完成：若尚未执行运行时上下文中的复审，现在执行；若已执行，直接输出最终总结（含复审结论与本次任务做了什么）。'
+export const DRIVER_HINT =
+  '(review-gate) 收尾复审未完成：请执行运行时上下文中的复审，完成后调用 review_acknowledge 回执，然后输出最终总结（含复审结论与本次任务做了什么）。'
 
 function buildDriverMessage(fileCount: number): UserMessage {
   return createUserMessage({
-    content: [{ type: 'text', text: DRIVER_TEXT }],
+    content: [{ type: 'text', text: DRIVER_HINT }],
     // Custom kind (not 'user'): the client renders this as a collapsed context
     // row with a one-line summary — never a chat bubble.
     source: {
@@ -154,22 +158,31 @@ export function handleTurnStopping(
   steer: (message: UserMessage) => void,
   config: ReviewGateConfig,
 ): ReviewAction {
-  // The write-time listener already graded the change (and armed pendingReview
-  // with the current depth). Here the gate only decides: interrupt the closing
-  // turn, or let it pass.
   if (state.pendingReview) {
     const action = state.pendingReview.action
+    // The receipt tool is the sole completion signal: acknowledged closes pass
+    // and settle all state.
+    if (state.acknowledged) {
+      state.pendingReview = null
+      state.files.clear()
+      state.chain = 0
+      return action
+    }
+    // Stop-loss: an unacknowledged model cannot pin the loop forever.
+    if (state.chain >= config.maxChain) {
+      state.pendingReview = null
+      state.files.clear()
+      return 'skip'
+    }
     steer(buildDriverMessage(state.pendingReview.files))
     state.chain += 1
-    // The driver is out; stop injecting until a fresh write re-arms it (a fix
-    // during the reviewing turn re-grades via the write-time listener).
-    state.pendingReview = null
-    // Writes of the closing turn are accounted for in pendingReview; clear the
-    // set so the reviewing turn accumulates its own (fix) writes afresh.
+    // Keep pendingReview armed: a later close in this turn can still ack. Fix
+    // writes during the reviewing turn re-grade via the write-time listener.
     state.files.clear()
     return action
   }
-  // Nothing owed: a write-free turn resets the chain; any leftovers are settled.
+  // Nothing owed: a write-free closing turn resets the chain; any leftovers
+  // are settled.
   if (state.files.size === 0) state.chain = 0
   state.files.clear()
   return 'skip'
@@ -196,7 +209,14 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         chain: state.chain,
         config,
       })
-      state.pendingReview = action === 'skip' ? null : { action, files: state.files.size }
+      if (action === 'skip') {
+        state.pendingReview = null
+      } else {
+        state.pendingReview = { action, files: state.files.size }
+        // Every fresh write invalidates any prior receipt: new changes owe a
+        // new review.
+        state.acknowledged = false
+      }
     })
 
     yield ctx.on(
@@ -237,6 +257,66 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         }
         return out
       },
+    )
+
+    // The receipt tool: the model calls it after finishing the review demanded
+    // by the runtime-context instruction. Registration flows its schema into
+    // prompt assembly automatically.
+    yield ctx.tools.register(
+      defineTool({
+        name: 'review_acknowledge',
+        description:
+          '复审闸门回执：完成运行时上下文要求的收尾复审后调用，提交结构化复审结论（无待复审回合时调用会被忽略）。',
+        parameters: {
+          action: {
+            type: 'string',
+            required: true,
+            enum: ['micro', 'full'],
+            description: '本次执行的复审档位',
+          },
+          files: {
+            type: 'array',
+            required: true,
+            description: '复审覆盖的文件绝对路径',
+          },
+          findings: {
+            type: 'array',
+            description:
+              '发现的问题列表，每项 {file, line?, severity(info|minor|major|critical), note}',
+          },
+          fixes_made: {
+            type: 'boolean',
+            required: true,
+            description: '是否已就地修复发现的问题',
+          },
+          summary: {
+            type: 'string',
+            required: true,
+            description: '复审结论一句话',
+          },
+        },
+        output: {
+          schema: { type: 'json' },
+          render: (_args, value) => [{ type: 'text', text: String(value) }],
+        },
+        async execute(args, exec) {
+          // defineTool already validated args against the parameter schema;
+          // its inferred type widens to JsonValue, so narrow once here.
+          const a = args as {
+            action: 'micro' | 'full'
+            files: string[]
+            findings?: unknown[]
+            fixes_made: boolean
+          }
+          const state = exec?.agent?.id ? states.get(exec.agent.id) : undefined
+          if (!state || !state.pendingReview) {
+            return '（当前无待复审回合，回执忽略）'
+          }
+          state.acknowledged = true
+          const findings = a.findings?.length ?? 0
+          return `复审回执已登记（${a.action}，${a.files.length} 文件，findings ${findings} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
+        },
+      }),
     )
   }, 'review-gate listeners')
 }
