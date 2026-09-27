@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, join as joinPath } from 'node:path'
 import { homedir } from 'node:os'
@@ -56,6 +56,10 @@ export interface ReviewGateConfig {
   readonly writeTools: readonly string[]
   // Glob patterns (e.g. '**' + '/*.md') whose writes never arm the gate.
   readonly ignoreGlobs: readonly string[]
+  // Glob patterns whose writes ALWAYS arm a full audit (core contract files).
+  readonly alwaysFullGlobs: readonly string[]
+  // Markdown file of distilled project pitfalls, appended to full review instructions.
+  readonly pitfallsFile?: string
   /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
   readonly receiptDir?: string
 }
@@ -68,6 +72,8 @@ export const Config = z.object({
   maxChain: z.number().min(1).default(2),
   writeTools: z.array(z.string()).default(['write', 'edit']),
   ignoreGlobs: z.array(z.string()).default([]),
+  alwaysFullGlobs: z.array(z.string()).default([]),
+  pitfallsFile: z.string(),
   receiptDir: z.string(),
 })
 
@@ -80,17 +86,25 @@ export function decideReview(input: {
   bashWrites?: boolean
   /** Cumulative session files since the last full review — drift toward a milestone audit. */
   sessionFiles?: number
+  /** Changed file paths, checked against alwaysFullGlobs. */
+  paths?: readonly string[]
   chain: number
-  config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain'>
+  config: Pick<
+    ReviewGateConfig,
+    'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs'
+  >
 }): ReviewAction {
-  const { writeFiles, bashWrites, sessionFiles, chain, config } = input
+  const { writeFiles, bashWrites, sessionFiles, paths, chain, config } = input
   if (writeFiles === 0 && !bashWrites) return 'skip'
   if (config.mode === 'off') return 'skip'
   if (chain >= config.maxChain) return 'skip'
   if (config.mode === 'micro') return 'micro'
   if (config.mode === 'full') return 'full'
   const drifted = (sessionFiles ?? 0) >= config.milestoneAtFiles
-  return writeFiles >= config.fullAtFiles || drifted ? 'full' : 'micro'
+  const core = (paths ?? []).some((p) =>
+    config.alwaysFullGlobs.some((g) => globToRegExp(g).test(p)),
+  )
+  return writeFiles >= config.fullAtFiles || drifted || core ? 'full' : 'micro'
 }
 
 /**
@@ -203,6 +217,7 @@ const FULL_TEXT = (files: number) =>
   `3. 测试批判：①测试和实现是否共享同一错误假设 ②有没有路径根本没被测到（边界/异常/并发/空值）③断言是真断言还是恒真\n` +
   `4. 回归面：跑全量相关测试 + 构建，不只跑本次新写的测试\n` +
   `5. 规格对照：改动是否完整覆盖需求，有无擅自缩水或加料\n` +
+  `（借鉴 Codex Security 的 stop-after-no-new 语义）复审-修复循环直到连续一轮零新发现才算收口；若本轮已零新发现，直接回执并输出总结\n` +
   `发现问题→立即修复并复验；无问题→说明每步查了什么。以只读排查为主，修复仅限复审发现的缺陷。全部完成后调用 review_acknowledge 工具回执（action/files/findings/fixes_made/summary），最终总结必须并入复审结论——总结是回合的最后一条消息。`
 
 /**
@@ -264,13 +279,23 @@ function clearTurnWrites(state: GateState): void {
 }
 
 /** Full review instruction body — injected as a runtime-context section, never as chat content. */
-export function reviewInstructionText(action: 'micro' | 'full', files: number): string {
-  return action === 'micro' ? MICRO_TEXT(files) : FULL_TEXT(files)
+export function reviewInstructionText(
+  action: 'micro' | 'full',
+  files: number,
+  pitfallsText?: string,
+): string {
+  if (action !== 'full') return MICRO_TEXT(files)
+  const base = FULL_TEXT(files)
+  if (!pitfallsText?.trim()) return base
+  return (
+    base +
+    `\n\n### 已知项目陷阱（复审时逐条对照，避免重犯已蒸馏过的坑）\n\n${pitfallsText.trim()}\n`
+  )
 }
 
 /** Minimal driver message: exists to keep the loop running; the instruction rides in the runtime context. */
 export const DRIVER_HINT =
-  '(review-gate) 收尾复审未完成：请执行运行时上下文中的复审，完成后调用 review_acknowledge 回执，然后输出最终总结（含复审结论与本次任务做了什么）。'
+  '(review-gate) 收尾复审未完成：请执行运行时上下文中的复审，完成后调用 review_acknowledge 回执，然后输出最终总结（含复审结论与本次任务做了什么）。若已回执，本消息为重发——直接结案，无需再登记。'
 
 function buildDriverMessage(fileCount: number): UserMessage {
   return createUserMessage({
@@ -344,6 +369,17 @@ export const inject = ['tools']
 export function apply(ctx: Context, config: ReviewGateConfig): void {
   const states = new Map<string, GateState>()
 
+  // Distilled pitfalls ride full review instructions. Read once at activation;
+  // the file is edited between sessions, not mid-turn.
+  let pitfallsText: string | undefined
+  try {
+    if (config.pitfallsFile && existsSync(config.pitfallsFile)) {
+      pitfallsText = readFileSync(config.pitfallsFile, 'utf8')
+    }
+  } catch {
+    pitfallsText = undefined
+  }
+
   // Grade immediately so the instruction leads the wrap-up: the model sees
   // "review before your final summary" while still working. Shared by both
   // signal sources (tools/result and fs intents).
@@ -352,6 +388,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       writeFiles: state.files.size,
       bashWrites: state.bashWrites,
       sessionFiles: state.sessionFiles,
+      paths: [...state.files],
       chain: state.chain,
       config,
     })
@@ -451,7 +488,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
               : ''
           out.contexts.push({
             name: 'review-gate',
-            text: reviewInstructionText(p.action, p.files) + diffSection + bashSection,
+            text: reviewInstructionText(p.action, p.files, pitfallsText) + diffSection + bashSection,
           })
         }
         return out
@@ -547,16 +584,26 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         }
         const agentId = exec?.agent?.id
         const state = agentId ? states.get(agentId) : undefined
-        if (!state || !state.pendingReview) {
+        if (!state) return '（当前无待复审回合，回执忽略）'
+        // Residue path: steer keeps pendingReview armed and the client may
+        // replay the driver hint after the review already settled. Clear the
+        // residue and point the model at a short close — never re-log.
+        if (state.acknowledged) {
+          state.pendingReview = null
+          clearTurnWrites(state)
+          return '复审早已完成并回执（本消息为重发），状态已清理。请直接输出简短结案。'
+        }
+        if (!state.pendingReview) {
           return '（当前无待复审回合，回执忽略）'
         }
         state.acknowledged = true
-        const findings = a.findings?.length ?? 0
+        // Findings flywheel: persist the full structured list so recurring bug
+        // patterns can later be distilled into the pitfalls file.
         await appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
           agentId,
           action: a.action,
           files: a.files,
-          findings,
+          findings: a.findings ?? [],
           fixes_made: a.fixes_made,
           summary: a.summary,
           cost: {
@@ -568,7 +615,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
               : 0,
           },
         })
-        return `复审回执已登记（${a.action}，${a.files.length} 文件，findings ${findings} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
+        return `复审回执已登记（${a.action}，${a.files.length} 文件，findings ${(a.findings ?? []).length} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
       },
     }),
   )

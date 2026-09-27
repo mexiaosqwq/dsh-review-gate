@@ -16,6 +16,7 @@ const baseConfig = {
   maxChain: 2,
   writeTools: ['write', 'edit'],
   ignoreGlobs: [],
+  alwaysFullGlobs: [],
 }
 
 test('decideReview: no writes -> skip', () => {
@@ -716,4 +717,90 @@ test('ack: receipt carries cost fields for transparency', async () => {
 test('full instruction includes data-flow tracing step', async () => {
   const { reviewInstructionText } = await import('../lib/index.js')
   assert.ok(reviewInstructionText('full', 1).includes('数据流'), 'full audit traces source→sink data flow')
+})
+
+// ---- v3.1: alwaysFullGlobs, findings flywheel, continuation short-circuit ----
+
+test('alwaysFullGlobs: touching a core contract file forces full depth', async () => {
+  const { decideReview } = await import('../lib/index.js')
+  const cfg = { ...baseConfig, alwaysFullGlobs: ['**/spec/**', '**/entity/**'] }
+  assert.equal(
+    decideReview({ writeFiles: 1, paths: ['/p/spec/总纲.md'], chain: 0, config: cfg }),
+    'full',
+    'core contract edits always get a full audit',
+  )
+  assert.equal(
+    decideReview({ writeFiles: 1, paths: ['/p/a.ts'], chain: 0, config: cfg }),
+    'micro',
+    'ordinary files keep auto grading',
+  )
+})
+
+test('ack: findings are persisted in full, not as a count', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await fs.mkdtemp(join(_tmpdir(), 'rg-find-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  const agent = { id: 'fly', steer: () => {} }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  const finding = { file: '/a.ts', line: 3, severity: 'major', note: 'copied block not renamed' }
+  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [finding], fixes_made: true, summary: 'fixed' }, { agent })
+  const rec = JSON.parse((await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim())
+  assert.deepEqual(rec.findings, [finding], 'findings flywheel needs the full structured list')
+  await fs.rm(receiptDir, { recursive: true, force: true })
+})
+
+test('pitfallsFile: full instruction carries the known project pitfalls section', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const pitfalls = join(_tmpdir(), 'rg-pitfalls.md')
+  await fs.writeFile(pitfalls, '- JS 弱转判界: +null===0')
+  apply(ctx, { ...baseConfig, pitfallsFile: pitfalls })
+  const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+  const agent = { id: 'pit', steer: () => {} }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/p/a.ts' }, agent })
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/p/b.ts' }, agent })
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/p/c.ts' }, agent })
+  const a = { contexts: [], sections: [], tools: [], variables: {} }
+  const out = await listener(a, { agent }, async () => a)
+  const sec = out.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(sec?.text.includes('JS 弱转判界'), 'full review sees the distilled pitfalls')
+  await fs.rm(pitfalls, { force: true })
+})
+
+test('ack: clean-state call short-circuits without logging an empty receipt', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await fs.mkdtemp(join(_tmpdir(), 'rg-short-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  const agent = { id: 'sc', steer: () => {} }
+  const result = await ack.execute({ action: 'micro', files: [], findings: [], fixes_made: false, summary: 'probe' }, { agent })
+  assert.ok(result.includes('回执忽略'), 'continuation-replayed calls get an explicit skip hint')
+  const file = join(receiptDir, 'receipts.jsonl')
+  assert.equal(await fs.access(file).then(() => true, () => false), false, 'no empty receipt line is written')
+  await fs.rm(receiptDir, { recursive: true, force: true })
+})
+
+test('driver hint tells an already-acknowledged model it may close directly', async () => {
+  const { DRIVER_HINT } = await import('../lib/index.js')
+  assert.ok(DRIVER_HINT.includes('已回执'), 'replayed hint is ignorable by wording')
+})
+
+test('ack: a replayed call after settlement clears residue without a second receipt', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await fs.mkdtemp(join(_tmpdir(), 'rg-residue-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  const agent = { id: 'res', steer: () => {} }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+  // Steer keeps pendingReview armed; the client may replay the hint afterwards.
+  const again = await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'replay' }, { agent })
+  assert.ok(again.includes('已完成'), 'replayed call points the model to close directly')
+  const lines = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim().split('\n')
+  assert.equal(lines.length, 1, 'exactly one receipt for one review')
+  await fs.rm(receiptDir, { recursive: true, force: true })
 })

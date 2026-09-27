@@ -30,6 +30,8 @@ export interface ReviewGateConfig {
     /** Tool names whose executions count as code writes. bash is deliberately excluded. */
     readonly writeTools: readonly string[];
     readonly ignoreGlobs: readonly string[];
+    readonly alwaysFullGlobs: readonly string[];
+    readonly pitfallsFile?: string;
     /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
     readonly receiptDir?: string;
 }
@@ -41,6 +43,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
     ignoreGlobs: z<string[], string[], "defined">;
+    alwaysFullGlobs: z<string[], string[], "defined">;
+    pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
 }>>, Schemastery.ObjectT<NoInfer<{
     mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
@@ -50,6 +54,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
     ignoreGlobs: z<string[], string[], "defined">;
+    alwaysFullGlobs: z<string[], string[], "defined">;
+    pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
 }>>, "plain">;
 export type ReviewAction = 'skip' | 'micro' | 'full';
@@ -60,8 +66,10 @@ export declare function decideReview(input: {
     bashWrites?: boolean;
     /** Cumulative session files since the last full review — drift toward a milestone audit. */
     sessionFiles?: number;
+    /** Changed file paths, checked against alwaysFullGlobs. */
+    paths?: readonly string[];
     chain: number;
-    config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain'>;
+    config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs'>;
 }): ReviewAction;
 /**
  * Minimal glob to RegExp for ignoreGlobs: double-star spans directories (and
@@ -120,9 +128,9 @@ export interface GateState {
 }
 export declare function createState(): GateState;
 /** Full review instruction body — injected as a runtime-context section, never as chat content. */
-export declare function reviewInstructionText(action: 'micro' | 'full', files: number): string;
+export declare function reviewInstructionText(action: 'micro' | 'full', files: number, pitfallsText?: string): string;
 /** Minimal driver message: exists to keep the loop running; the instruction rides in the runtime context. */
-export declare const DRIVER_HINT = "(review-gate) \u6536\u5C3E\u590D\u5BA1\u672A\u5B8C\u6210\uFF1A\u8BF7\u6267\u884C\u8FD0\u884C\u65F6\u4E0A\u4E0B\u6587\u4E2D\u7684\u590D\u5BA1\uFF0C\u5B8C\u6210\u540E\u8C03\u7528 review_acknowledge \u56DE\u6267\uFF0C\u7136\u540E\u8F93\u51FA\u6700\u7EC8\u603B\u7ED3\uFF08\u542B\u590D\u5BA1\u7ED3\u8BBA\u4E0E\u672C\u6B21\u4EFB\u52A1\u505A\u4E86\u4EC0\u4E48\uFF09\u3002";
+export declare const DRIVER_HINT = "(review-gate) \u6536\u5C3E\u590D\u5BA1\u672A\u5B8C\u6210\uFF1A\u8BF7\u6267\u884C\u8FD0\u884C\u65F6\u4E0A\u4E0B\u6587\u4E2D\u7684\u590D\u5BA1\uFF0C\u5B8C\u6210\u540E\u8C03\u7528 review_acknowledge \u56DE\u6267\uFF0C\u7136\u540E\u8F93\u51FA\u6700\u7EC8\u603B\u7ED3\uFF08\u542B\u590D\u5BA1\u7ED3\u8BBA\u4E0E\u672C\u6B21\u4EFB\u52A1\u505A\u4E86\u4EC0\u4E48\uFF09\u3002\u82E5\u5DF2\u56DE\u6267\uFF0C\u672C\u6D88\u606F\u4E3A\u91CD\u53D1\u2014\u2014\u76F4\u63A5\u7ED3\u6848\uFF0C\u65E0\u9700\u518D\u767B\u8BB0\u3002";
 /**
  * Turn-closing hook: consume the write-time grading (pendingReview) and steer
  * the wrap-up review when one is armed. Depth capping (maxChain) happens at
