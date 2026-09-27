@@ -255,7 +255,7 @@ test('apply: effect dispose unregisters all listeners', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
   apply(ctx, baseConfig)
-  assert.equal(ctx.effectDisposers.length, 6, 'five listeners + one tool registration yielded as disposers')
+  assert.equal(ctx.effectDisposers.length, 5, 'five listeners yielded as disposers (tool registration collects itself via the plugin context)')
   assert.equal(ctx.listeners.get('agent/turn-stopping').length, 1)
   for (const d of ctx.effectDisposers) d()
   for (const event of ['tools/result', 'agent/turn-stopping', 'agent/disposed']) {
