@@ -816,3 +816,45 @@ test('full instruction carries the Codex reviewer recipe', async () => {
   assert.ok(text.includes('critical'), 'severity calibration matrix is stated')
   assert.ok(text.includes('不可信分析数据'), 'injected evidence is declared untrusted data')
 })
+
+// ---- v3.3: real-host state machine fixes (dual-signal dedup, ack self-clear) ----
+
+test('fs-intent and tools/result signals dedupe the same file', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, { ...baseConfig, milestoneAtFiles: 2 })
+  const steered = []
+  const agent = { id: 'dd', steer: (m) => steered.push(m) }
+  // Real order: intent fires first with displayPath, then tools/result with file_path.
+  const writeIntent = ctx.listeners.get('fs/write-intent')?.[0]
+  await writeIntent({ targetKey: '/q/x.ts', displayPath: '/q/x.ts' }, { agent }, () => undefined)
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/q/x.ts' }, agent })
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/q/y.ts' }, agent })
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/q/z.ts' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 1)
+  // x counted once (dedup) + y + z = 3 real files, not 4 — check the assemble
+  // injection, which is where the file count lives (the driver hint is count-free).
+  const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+  const a = { contexts: [], sections: [], tools: [], variables: {} }
+  const out = await listener(a, { agent }, async () => a)
+  const sec = out.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(sec?.text.includes('3 个文件'), 'dedup keeps the true file count (3, not 4)')
+})
+
+test('ack self-clears pendingReview — a replayed close never steers again', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const ack = getAck(ctx)
+  const steered = []
+  const agent = { id: 'selfclear', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+  // Same turn closes again (client continuation): no second steer, no chain growth.
+  const action = ctx.listeners.get('agent/turn-stopping')?.[0]?.(
+    { agent, turn: 1, signal: new AbortController().signal },
+  )
+  assert.equal(steered.length, 0, 'ack settled the pending review — replayed closes pass silently')
+  assert.equal(action ?? 'micro', 'micro', 'returns the settled action without re-arming')
+})

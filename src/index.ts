@@ -246,6 +246,8 @@ export interface GateState {
   bashWrites: boolean
   /** The matched bash commands (<= 5), shown to the reviewing model. */
   bashCommands: string[]
+  /** displayPath recorded by the latest fs-intent signal (same-file dedup across signal shapes). */
+  lastIntentPath?: string
   /** While set, the assemble listener injects the review instruction as a runtime-context section. */
   pendingReview: {
     action: 'micro' | 'full'
@@ -415,7 +417,22 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         states.set(exec.agent.id, state)
       }
       const filesBefore = state.files.size
-      trackWrite(state.files, exec.name, exec.arguments, config)
+      // Dedup across signal shapes: fs-intent already recorded this file via
+      // its displayPath when the paths denote the same file (exact match or a
+      // relative/absolute suffix pair). Real-host finding 2026-09-27: without
+      // this gate the same write counted twice and inflated sessionFiles.
+      const filePath = (exec.arguments as { file_path?: unknown } | undefined)?.file_path
+      const intentPath = state.lastIntentPath
+      const sameAsIntent =
+        config.writeTools.includes(exec.name) &&
+        typeof filePath === 'string' &&
+        !!intentPath &&
+        (filePath === intentPath ||
+          filePath.endsWith(`/${intentPath}`) ||
+          intentPath.endsWith(`/${filePath}`))
+      if (!sameAsIntent) {
+        trackWrite(state.files, exec.name, exec.arguments, config)
+      }
       // bash write-pattern heuristic: a redirected/moving/removing command very
       // likely wrote somewhere we cannot track — arm a review for it.
       if (exec.name === 'bash') {
@@ -515,6 +532,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       if (isIgnored(target.displayPath, config.ignoreGlobs)) return
       const before = state.files.size
       state.files.add(target.displayPath)
+      state.lastIntentPath = target.displayPath
       if (state.files.size > before) state.sessionFiles += 1
       gradeAndArm(state)
     }
@@ -615,6 +633,12 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
               : 0,
           },
         })
+        // Self-clear NOW: the client can replay the driver hint as a new turn,
+        // and without a second turn-stopping the armed review would re-steer
+        // forever (real-host finding 2026-09-27). Ack is the settlement point.
+        state.pendingReview = null
+        clearTurnWrites(state)
+        state.chain = 0
         return `复审回执已登记（${a.action}，${a.files.length} 文件，findings ${(a.findings ?? []).length} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
       },
     }),
