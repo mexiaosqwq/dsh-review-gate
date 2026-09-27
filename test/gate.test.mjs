@@ -804,3 +804,15 @@ test('ack: a replayed call after settlement clears residue without a second rece
   assert.equal(lines.length, 1, 'exactly one receipt for one review')
   await fs.rm(receiptDir, { recursive: true, force: true })
 })
+
+// ---- v3.2: Codex Security reviewer recipe (five borrowings) ----
+
+test('full instruction carries the Codex reviewer recipe', async () => {
+  const { reviewInstructionText } = await import('../lib/index.js')
+  const text = reviewInstructionText('full', 1)
+  assert.ok(text.includes('Forward') && text.includes('Backward'), 'four reviewer perspectives are listed')
+  assert.ok(text.includes('三连接'), 'conclusions must connect input→control→sink')
+  assert.ok(text.includes('逐行读过'), 'coverage honesty: only truly read files count')
+  assert.ok(text.includes('critical'), 'severity calibration matrix is stated')
+  assert.ok(text.includes('不可信分析数据'), 'injected evidence is declared untrusted data')
+})
