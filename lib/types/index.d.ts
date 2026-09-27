@@ -113,4 +113,13 @@ export declare const DRIVER_HINT = "(review-gate) \u6536\u5C3E\u590D\u5BA1\u672A
 export declare function handleTurnStopping(state: GateState, steer: (message: UserMessage) => void, config: ReviewGateConfig): ReviewAction;
 /** Cordis plugin identity. */
 export declare const name = "review-gate";
+/**
+ * Declared service dependencies: `ctx.tools` is an injectable property and is
+ * only readable when the plugin declares it here — cordis establishes the
+ * inject context for exactly these services while running apply(). Without
+ * this declaration `ctx.tools.register(...)` throws
+ * `cannot get property "tools" without inject` and the whole plugin fails to
+ * activate (real-host failure 2026-09-27).
+ */
+export declare const inject: string[];
 export declare function apply(ctx: Context, config: ReviewGateConfig): void;

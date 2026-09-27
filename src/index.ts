@@ -295,6 +295,16 @@ export function handleTurnStopping(
 /** Cordis plugin identity. */
 export const name = 'review-gate'
 
+/**
+ * Declared service dependencies: `ctx.tools` is an injectable property and is
+ * only readable when the plugin declares it here — cordis establishes the
+ * inject context for exactly these services while running apply(). Without
+ * this declaration `ctx.tools.register(...)` throws
+ * `cannot get property "tools" without inject` and the whole plugin fails to
+ * activate (real-host failure 2026-09-27).
+ */
+export const inject = ['tools']
+
 export function apply(ctx: Context, config: ReviewGateConfig): void {
   const states = new Map<string, GateState>()
   ctx.effect(function* () {
