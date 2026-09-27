@@ -603,3 +603,40 @@ test('ack: receipt lands in the audit log', async () => {
   // 清理测试残留，防止跨测试串读
   await fs.rm(receiptDir, { recursive: true, force: true })
 })
+
+// ---- v2 Task 4: bash write-pattern heuristic (partial blind-spot cover) ----
+
+test('decideReview: bashWrites alone grades micro', async () => {
+  const { decideReview, BASH_WRITE_RE } = await import('../lib/index.js')
+  assert.equal(decideReview({ writeFiles: 0, bashWrites: true, chain: 0, config: baseConfig }), 'micro')
+  assert.equal(decideReview({ writeFiles: 0, bashWrites: false, chain: 0, config: baseConfig }), 'skip')
+  assert.ok(BASH_WRITE_RE.test('echo hi > /x.txt'), 'redirect matches')
+  assert.ok(BASH_WRITE_RE.test('rm -rf build'), 'rm matches')
+  assert.ok(BASH_WRITE_RE.test('npm i left-pad'), 'npm install matches')
+  assert.equal(BASH_WRITE_RE.test('ls -la'), false, 'harmless ls does not match')
+  assert.equal(BASH_WRITE_RE.test('cat package.json'), false, 'cat does not match')
+})
+
+test('apply: bash write-pattern command arms a micro review with the command listed', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const steered = []
+  const agent = { id: 'bsh', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'bash', arguments: { command: 'echo x > /tmp/patch.txt' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 1, 'bash write arms the gate')
+  const text = steered[0].content.map((b) => b.text ?? '').join('')
+  assert.ok(typeof text === 'string')
+})
+
+test('apply: harmless bash command does not arm the gate', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const steered = []
+  const agent = { id: 'cat', steer: (m) => steered.push(m) }
+  ctx.emit('tools/result', { name: 'bash', arguments: { command: 'cat /tmp/patch.txt' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 0, 'cat alone never arms the gate')
+})

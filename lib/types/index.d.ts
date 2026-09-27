@@ -49,9 +49,17 @@ export type ReviewAction = 'skip' | 'micro' | 'full';
 /** Decide whether the closing turn owes a review, and at what depth. */
 export declare function decideReview(input: {
     writeFiles: number;
+    /** A bash command matched the write-pattern heuristic (no file path known). */
+    bashWrites?: boolean;
     chain: number;
     config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'maxChain'>;
 }): ReviewAction;
+/**
+ * bash commands that very likely wrote to the filesystem. bash process writes
+ * bypass the FileSystem service entirely, so this command-pattern heuristic is
+ * the only partial cover for the blind spot — it arms a review, never blocks.
+ */
+export declare const BASH_WRITE_RE: RegExp;
 /** Record one tool execution as a code write when its tool is a tracked write tool. */
 export declare function trackWrite(files: Set<string>, toolName: string, args: unknown, config: Pick<ReviewGateConfig, 'writeTools'>): void;
 /**
@@ -75,6 +83,10 @@ export declare function buildReviewMessage(action: 'micro' | 'full', fileCount: 
 export interface GateState {
     files: Set<string>;
     chain: number;
+    /** A bash command matched BASH_WRITE_RE during the open turn. */
+    bashWrites: boolean;
+    /** The matched bash commands (<= 5), shown to the reviewing model. */
+    bashCommands: string[];
     /** While set, the assemble listener injects the review instruction as a runtime-context section. */
     pendingReview: {
         action: 'micro' | 'full';

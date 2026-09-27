@@ -69,17 +69,27 @@ export type ReviewAction = 'skip' | 'micro' | 'full'
 /** Decide whether the closing turn owes a review, and at what depth. */
 export function decideReview(input: {
   writeFiles: number
+  /** A bash command matched the write-pattern heuristic (no file path known). */
+  bashWrites?: boolean
   chain: number
   config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'maxChain'>
 }): ReviewAction {
-  const { writeFiles, chain, config } = input
-  if (writeFiles === 0) return 'skip'
+  const { writeFiles, bashWrites, chain, config } = input
+  if (writeFiles === 0 && !bashWrites) return 'skip'
   if (config.mode === 'off') return 'skip'
   if (chain >= config.maxChain) return 'skip'
   if (config.mode === 'micro') return 'micro'
   if (config.mode === 'full') return 'full'
   return writeFiles >= config.fullAtFiles ? 'full' : 'micro'
 }
+
+/**
+ * bash commands that very likely wrote to the filesystem. bash process writes
+ * bypass the FileSystem service entirely, so this command-pattern heuristic is
+ * the only partial cover for the blind spot — it arms a review, never blocks.
+ */
+export const BASH_WRITE_RE =
+  /(^|[\s;&|])(>|>>|tee\b|sed\b[^\n]*-i\b|\bmv\b|\bcp\b|\brm\b|\bmkdir\b|\btouch\b|\bchmod\b|\bchown\b|\bln\b|npm\s+(install|i|add|update)|git\s+checkout\b[^\n]*--\b|git\s+reset\b|git\s+clean\b)/
 
 /** Record one tool execution as a code write when its tool is a tracked write tool. */
 export function trackWrite(
@@ -184,6 +194,10 @@ export function buildReviewMessage(action: 'micro' | 'full', fileCount: number):
 export interface GateState {
   files: Set<string>
   chain: number
+  /** A bash command matched BASH_WRITE_RE during the open turn. */
+  bashWrites: boolean
+  /** The matched bash commands (<= 5), shown to the reviewing model. */
+  bashCommands: string[]
   /** While set, the assemble listener injects the review instruction as a runtime-context section. */
   pendingReview: {
     action: 'micro' | 'full'
@@ -198,7 +212,21 @@ export interface GateState {
 }
 
 export function createState(): GateState {
-  return { files: new Set(), chain: 0, pendingReview: null, acknowledged: false }
+  return {
+    files: new Set(),
+    chain: 0,
+    bashWrites: false,
+    bashCommands: [],
+    pendingReview: null,
+    acknowledged: false,
+  }
+}
+
+/** Settle the open turn's write tracking (files + bash heuristics) in one place. */
+function clearTurnWrites(state: GateState): void {
+  state.files.clear()
+  state.bashWrites = false
+  state.bashCommands = []
 }
 
 /** Full review instruction body — injected as a runtime-context section, never as chat content. */
@@ -240,27 +268,27 @@ export function handleTurnStopping(
     // and settle all state.
     if (state.acknowledged) {
       state.pendingReview = null
-      state.files.clear()
+      clearTurnWrites(state)
       state.chain = 0
       return action
     }
     // Stop-loss: an unacknowledged model cannot pin the loop forever.
     if (state.chain >= config.maxChain) {
       state.pendingReview = null
-      state.files.clear()
+      clearTurnWrites(state)
       return 'skip'
     }
     steer(buildDriverMessage(state.pendingReview.files))
     state.chain += 1
     // Keep pendingReview armed: a later close in this turn can still ack. Fix
     // writes during the reviewing turn re-grade via the write-time listener.
-    state.files.clear()
+    clearTurnWrites(state)
     return action
   }
   // Nothing owed: a write-free closing turn resets the chain; any leftovers
   // are settled.
-  if (state.files.size === 0) state.chain = 0
-  state.files.clear()
+  if (state.files.size === 0 && !state.bashWrites) state.chain = 0
+  clearTurnWrites(state)
   return 'skip'
 }
 
@@ -278,17 +306,31 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         states.set(exec.agent.id, state)
       }
       trackWrite(state.files, exec.name, exec.arguments, config)
+      // bash write-pattern heuristic: a redirected/moving/removing command very
+      // likely wrote somewhere we cannot track — arm a review for it.
+      if (exec.name === 'bash') {
+        const command = (exec.arguments as { command?: unknown } | undefined)?.command
+        if (typeof command === 'string' && BASH_WRITE_RE.test(command)) {
+          state.bashWrites = true
+          if (state.bashCommands.length < 5) state.bashCommands.push(command)
+        }
+      }
       // Grade immediately on each write so the instruction leads the wrap-up:
       // the model sees "review before your final summary" while still working.
       const action = decideReview({
         writeFiles: state.files.size,
+        bashWrites: state.bashWrites,
         chain: state.chain,
         config,
       })
       if (action === 'skip') {
         state.pendingReview = null
       } else {
-        state.pendingReview = { action, files: state.files.size, paths: [...state.files] }
+        state.pendingReview = {
+          action,
+          files: state.files.size || (state.bashWrites ? 1 : 0),
+          paths: [...state.files],
+        }
         // Every fresh write invalidates any prior receipt: new changes owe a
         // new review.
         state.acknowledged = false
@@ -345,9 +387,14 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           const diffSection = p.diffText
             ? `\n\n### 本回合改动 diff（HEAD 起）\n\`\`\`diff\n${p.diffText}\n\`\`\``
             : '\n\n（非 git 环境：请对照你本回合的编辑记录复审）'
+          const bashSection =
+            state.bashCommands.length > 0
+              ? '\n\n### bash 疑似写入命令（进程直写不进上面的 diff，请自行核对这些命令改了什么）\n' +
+                state.bashCommands.map((c) => `- \`${c}\``).join('\n')
+              : ''
           out.contexts.push({
             name: 'review-gate',
-            text: reviewInstructionText(p.action, p.files) + diffSection,
+            text: reviewInstructionText(p.action, p.files) + diffSection + bashSection,
           })
         }
         return out
