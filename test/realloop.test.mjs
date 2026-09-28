@@ -266,3 +266,36 @@ test('realloop: waterfall single-slot semantics — first-registrant veto trunca
   disposeVetoB()
   console.log('[verdict] single-slot veto: A(later observer never ran) + B(observer ran, veto value passthrough) both hold')
 })
+
+test('config: noNewReviewsBeforeDemotion schema default matches decideReview fallback semantics', async () => {
+  const { Config, decideReview } = await import('../lib/index.js')
+  const resolved = Config({})
+  // Cross-source pin (closer CL2, v5-T2): the schema default and the
+  // decideReview ?? fallback must agree — a one-sided edit here silently
+  // changes escalation behavior, so assert the semantics at both sides.
+  assert.equal(resolved.noNewReviewsBeforeDemotion, 3)
+  // Behavior cross-check on the pure fallback path: full baseline config but
+  // NO noNewReviewsBeforeDemotion key, so the ?? 3 fallback decides. At the
+  // schema default the drift signal is spent exactly at K (noNewReviews === K
+  // -> no escalation), one below it still escalates.
+  const fallbackCfg = {
+    mode: 'auto',
+    fullAtFiles: 3,
+    fullAtLines: 150,
+    milestoneAtFiles: 10,
+    maxChain: 2,
+    writeTools: ['write', 'edit'],
+    ignoreGlobs: [],
+    alwaysFullGlobs: [],
+  }
+  assert.equal(
+    decideReview({ writeFiles: 1, sessionFiles: 10, noNewReviews: resolved.noNewReviewsBeforeDemotion, chain: 0, config: fallbackCfg }),
+    'micro',
+    'drift spent exactly at the schema default K',
+  )
+  assert.equal(
+    decideReview({ writeFiles: 1, sessionFiles: 10, noNewReviews: resolved.noNewReviewsBeforeDemotion - 1, chain: 0, config: fallbackCfg }),
+    'full',
+    'drift still armed one below the schema default K',
+  )
+})

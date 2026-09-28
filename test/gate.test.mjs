@@ -593,18 +593,23 @@ test('appendReceipt: appends one JSON line; write failure is swallowed', async (
 test('ack: receipt lands in the audit log', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
-  const receiptDir = join(_tmpdir(), 'review-gate-test')
+  // mkdtemp random dir (v5-T2): a fixed path leaked residue rows whenever a
+  // failing round crashed before cleanup, poisoning the next run's single-line
+  // JSON.parse — same pattern as the v5-F1 cases.
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-ack-'))
   apply(ctx, { ...baseConfig, receiptDir })
   const ack = getAck(ctx)
   const agent = { id: 'audit', steer: () => {} }
-  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
-  await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
-  const line = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim()
-  const rec = JSON.parse(line)
-  assert.equal(rec.action, 'micro')
-  assert.equal(rec.agentId, 'audit')
-  // 清理测试残留，防止跨测试串读
-  await fs.rm(receiptDir, { recursive: true, force: true })
+  try {
+    ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+    await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+    const line = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim()
+    const rec = JSON.parse(line)
+    assert.equal(rec.action, 'micro')
+    assert.equal(rec.agentId, 'audit')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
 })
 
 // ---- v2 Task 4: bash write-pattern heuristic (partial blind-spot cover) ----
