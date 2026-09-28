@@ -47,5 +47,25 @@
 - 失败 ≤3 轮修复台账，超限挂起该任务不硬闯。
 - STOP 纪律不变：lib 行为与断言不符 → 取证报告，不硬修。
 
-## 晨间 Digest（明早在此追加）
-- （待填）
+## 晨间 Digest（2026-09-29 早）
+
+### 今晚完成（6/6 任务，9 commits，测试 72：gate 66 + realloop 6，全程绿）
+
+| 任务 | 结果 | commit |
+|---|---|---|
+| T1 | F1 三件（noNewReviews 疲劳防护 / receipts outcome 终态语义 / 边界枚举条）+ closer 统审 PASS | `961b2e7` |
+| T2 | ack receipt 测试 mkdtemp 化（残留污染源消除）+ Config K 双源交叉断言 | `140861d` |
+| T3 | fs-intent 死车道全清（净删 60 行，写跟踪单信号化 + Set 幂等） | `c92be42` |
+| T4 | README 部署约定节（slot 所有权 / 兜底充分性 / 重启契约） | `7f79278` |
+| T5 | 两份 spec 草案（五分区对齐=建议只搬 2 个文本微调；防锚定二审=形态+成本+数据门槛齐备） | `776d1ee` |
+| T6 | 契约对齐审计：10 接触点对拍，三处真偏差全经 lead 抽验实证（报告 `docs/handover/2026-09-28-v5-T6-contract-audit-scout.md`，与本 digest 同 commit 入库） | 见本 commit |
+
+### 待你拍板（晨间决定队列，全部有草案在手）
+1. **T6 Top3 小件**（共 ~5-9 行，全部 lead 抽验过）：README steer ceiling 过时更正（steer 已契约化 runtime-types.d.ts:194）/ assemble 依赖扩展字段 JSDoc+诊断收据 / Config schema pitfallsFile+receiptDir optional 化（现 schema 必填 vs 代码按可选）
+2. **T5① 五分区**：scout 建议只搬 2 个文本微调，不立专项 spec（架构前提不成立）
+3. **T5② reviewerSubagent**：形态/成本（full ×2-3）/数据门槛齐备，建议维持缓办等 receipts 数据
+4. **stop_loss 行密度**：closer 实证两条生产触发路径（行量有界略高于预估），建议等实数据
+5. **上游报障**：inspect 带输入查询被拒（"input" must be an object，桥接 bug，今日两度复现）——要不要报 DSH 上游你定
+
+### 台账提醒
+`docs/handover/decisions.md` 七项待追认已全部落位；夜间新增拍板（T2-T6 授权）源自你的「晚上就麻烦你了」授权，本 digest 即追认请求。
