@@ -44,6 +44,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     alwaysFullGlobs: z<string[], string[], "defined">;
     pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
+    noNewReviewsBeforeDemotion: z<number, number, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     mode: z<"micro" | "full" | "off" | "auto", "micro" | "full" | "off" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
@@ -55,6 +56,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     alwaysFullGlobs: z<string[], string[], "defined">;
     pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
+    noNewReviewsBeforeDemotion: z<number, number, "defined">;
 }>>, "plain">;
 /** Cordis plugin identity. */
 export declare const name = "review-gate";

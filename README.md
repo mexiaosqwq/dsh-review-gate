@@ -45,6 +45,7 @@ dsh plugin --profile web add ~/dsh-review-gate
 | `maxChain` | `2` | 连续未 ack 的拦截上限（止损） |
 | `writeTools` | `["write","edit"]` | 视为代码写入的工具名 |
 | `receiptDir` | `~/.dsh/storages/review-gate` | 回执审计日志目录 |
+| `noNewReviewsBeforeDemotion` | `3` | 连续 K 次 full 复审零新发现后，会话漂移（milestone）不再升格全面复审（收敛疲劳防护；不影响基本分档与止损） |
 
 **已知边界（ceiling）**：bash 里的文件写不走 FileSystem service（事件层不可见），只有命令模式启发式部分覆盖（有误报/漏报，只武装不阻断）；`agent.steer()` 是 agent-loop 的运行时能力而非 `Agent` 接口的类型契约，harness 未来若改名会静默失效（有 `typeof` 守卫，表现为不触发复审而非报错）；写失败的工具调用（如 edit 报错）也会计入改动——方向保守，多触发一次复审无害；`turn-stopping` 语义是「模型暂时不欠响应」，回合中间的停顿也会触发拦截（可能与进行中的工作交叠）；用户中断会清空 inbox，待执行的复审随之取消（用户干预优先）；复审质量仍取决于模型自身执行指令的认真程度——闸门保证「复审必发生」（回执可审计），diff 证据消除「凭记忆复审」，但不保证「复审必找出所有 bug」；自定义 source kind 的消息在会话重建时依赖 inbox 投影对 source 的容忍（待审窗口极短，最坏丢失一次复审提示）。
 

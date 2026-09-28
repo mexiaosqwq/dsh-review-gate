@@ -858,3 +858,103 @@ test('ack self-clears pendingReview — a replayed close never steers again', as
   assert.equal(steered.length, 0, 'ack settled the pending review — replayed closes pass silently')
   assert.equal(action ?? 'micro', 'micro', 'returns the settled action without re-arming')
 })
+
+// ---- v5-F1 A: convergence fatigue guard (noNewReviews) ----
+
+test('decideReview: milestone drift still escalates while noNewReviews < K (default 3 via fallback)', async () => {
+  const { decideReview } = await import('../lib/index.js')
+  // baseConfig has no noNewReviewsBeforeDemotion key: the ?? 3 fallback arms it.
+  assert.equal(
+    decideReview({ writeFiles: 1, sessionFiles: 10, noNewReviews: 2, chain: 0, config: baseConfig }),
+    'full',
+    'drift escalation holds below the demotion threshold',
+  )
+})
+
+test('decideReview: after K zero-finding full reviews drift no longer escalates, base grading untouched', async () => {
+  const { decideReview } = await import('../lib/index.js')
+  const cfg = { ...baseConfig, noNewReviewsBeforeDemotion: 3 }
+  assert.equal(
+    decideReview({ writeFiles: 1, sessionFiles: 10, noNewReviews: 3, chain: 0, config: cfg }),
+    'micro',
+    'spent drift signal can no longer escalate on its own',
+  )
+  // micro/full base grading untouched: fullAtFiles still forces full.
+  assert.equal(
+    decideReview({ writeFiles: 3, sessionFiles: 10, noNewReviews: 5, chain: 0, config: cfg }),
+    'full',
+    'fullAtFiles base grading survives the fatigue guard',
+  )
+})
+
+test('ack: noNewReviews counter increments on zero-finding full settlements and resets otherwise', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-f1-counter-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  const agent = { id: 'fatigue', steer: () => {} }
+  const arm = () => ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  try {
+    arm()
+    await ack.execute({ action: 'full', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+    arm()
+    await ack.execute({ action: 'full', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+    arm()
+    await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+    const lines = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim().split('\n')
+    assert.equal(lines.length, 3, 'three settlements, three receipt lines')
+    const costs = lines.map((l) => JSON.parse(l).cost.noNewReviews)
+    assert.deepEqual(costs, [1, 2, 0], 'zero-finding full increments, any other settlement resets')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+// ---- v5-F1 B: receipts outcome (acknowledged | stop_loss) ----
+
+test('receipts: stop-loss close lands an outcome:stop_loss line with the reviewed files', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-f1-stoploss-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const agent = { id: 'stoploss', steer: () => {} }
+  const steered = []
+  agent.steer = (m) => steered.push(m)
+  const ts = ctx.listeners.get('agent/turn-stopping')?.[0]
+  try {
+    ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/sl.ts' }, agent })
+    ts({ agent, turn: 1, signal: new AbortController().signal })
+    ts({ agent, turn: 1, signal: new AbortController().signal })
+    ts({ agent, turn: 1, signal: new AbortController().signal })
+    assert.equal(steered.length, 2, 'maxChain=2 steers twice before the stop-loss close')
+    // fire-and-forget receipt (mkdir + appendFile spans multiple awaits): give
+    // the event loop real time before reading the file
+    await new Promise((r) => setTimeout(r, 25))
+    const lines = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim().split('\n')
+    assert.equal(lines.length, 1, 'only the stop-loss close writes a receipt line')
+    const rec = JSON.parse(lines[0])
+    assert.equal(rec.outcome, 'stop_loss')
+    assert.equal(rec.chain, 2)
+    assert.deepEqual(rec.files, ['/sl.ts'], 'files snapshot survives the nulling stop-loss branch')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('receipts: acknowledged settlement line carries outcome:acknowledged', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-f1-ack-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  const agent = { id: 'ackline', steer: () => {} }
+  try {
+    ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+    await ack.execute({ action: 'micro', files: ['/a.ts'], findings: [], fixes_made: false, summary: 'ok' }, { agent })
+    const rec = JSON.parse((await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim())
+    assert.equal(rec.outcome, 'acknowledged')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})

@@ -57,6 +57,7 @@ export const Config = z.object({
   alwaysFullGlobs: z.array(z.string()).default([]),
   pitfallsFile: z.string(),
   receiptDir: z.string(),
+  noNewReviewsBeforeDemotion: z.number().min(0).default(3),
 })
 
 /** Cordis plugin identity. */
@@ -112,6 +113,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       bashWrites: state.bashWrites,
       sessionFiles: state.sessionFiles,
       paths: [...state.files],
+      noNewReviews: state.noNewReviews,
       chain: state.chain,
       config,
     })
@@ -175,7 +177,22 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         const state = states.get(payload.agent.id)
         if (!state) return
         if (typeof payload.agent.steer !== 'function') return
-        handleTurnStopping(state, (message) => payload.agent.steer?.(message), config)
+        // Snapshot BEFORE handleTurnStopping: the maxChain stop-loss branch
+        // nulls pendingReview, so the reviewed files list must be captured
+        // first for the stop_loss audit line (v5-F1).
+        const files = state.pendingReview?.paths ?? []
+        const action = handleTurnStopping(state, (message) => payload.agent.steer?.(message), config)
+        // handleTurnStopping stays a pure function: IO lives here. 'skip' with
+        // a chain at the cap means the review was given up on — log the
+        // terminal state so the review-abandonment rate becomes observable.
+        if (action === 'skip' && state.chain >= config.maxChain) {
+          void appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
+            agentId: payload.agent.id,
+            outcome: 'stop_loss',
+            chain: state.chain,
+            files,
+          })
+        }
       },
     )
 
@@ -350,10 +367,16 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           return '（当前无待复审回合，回执忽略）'
         }
         state.acknowledged = true
+        // Convergence fatigue counter (v5-F1): a settled full review with zero
+        // new findings inches the session toward demoting the milestone
+        // escalation; any other settlement resets it.
+        state.noNewReviews =
+          a.action === 'full' && (a.findings ?? []).length === 0 ? state.noNewReviews + 1 : 0
         // Findings flywheel: persist the full structured list so recurring bug
         // patterns can later be distilled into the pitfalls file.
         await appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
           agentId,
+          outcome: 'acknowledged',
           action: a.action,
           files: a.files,
           findings: a.findings ?? [],
@@ -363,6 +386,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
             // Qoder-style transparency: what this review cost to demand.
             intercepts: state.chain,
             sessionFiles: state.sessionFiles,
+            noNewReviews: state.noNewReviews,
             diffLines: state.pendingReview.diffText
               ? state.pendingReview.diffText.split('\n').length
               : 0,

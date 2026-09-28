@@ -18,6 +18,8 @@ export interface ReviewGateConfig {
     readonly pitfallsFile?: string;
     /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
     readonly receiptDir?: string;
+    /** After this many consecutive full reviews with zero new findings, milestone drift no longer escalates to full (converged-session fatigue guard; default 3). */
+    readonly noNewReviewsBeforeDemotion?: number;
 }
 export type ReviewAction = 'skip' | 'micro' | 'full';
 export declare function decideReview(input: {
@@ -28,8 +30,10 @@ export declare function decideReview(input: {
     sessionFiles?: number;
     /** Changed file paths, checked against alwaysFullGlobs. */
     paths?: readonly string[];
+    /** Consecutive full reviews with zero new findings (optional; 0 = milestone escalation always armed, backward compatible). */
+    noNewReviews?: number;
     chain: number;
-    config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs'>;
+    config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs' | 'noNewReviewsBeforeDemotion'>;
 }): ReviewAction;
 export declare function globToRegExp(glob: string): RegExp;
 export declare function isIgnored(path: string, globs: readonly string[]): boolean;
@@ -57,6 +61,8 @@ export interface GateState {
     } | null;
     /** Set by the review_acknowledge tool — the sole review-completion signal. */
     acknowledged: boolean;
+    /** Consecutive full reviews settled with zero new findings (convergence fatigue counter; v5-F1). */
+    noNewReviews: number;
 }
 export declare function createState(): GateState;
 export declare function clearTurnWrites(state: GateState): void;

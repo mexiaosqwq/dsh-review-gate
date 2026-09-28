@@ -35,6 +35,8 @@ export interface ReviewGateConfig {
   readonly pitfallsFile?: string
   /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
   readonly receiptDir?: string
+  /** After this many consecutive full reviews with zero new findings, milestone drift no longer escalates to full (converged-session fatigue guard; default 3). */
+  readonly noNewReviewsBeforeDemotion?: number
 }
 
 export type ReviewAction = 'skip' | 'micro' | 'full'
@@ -48,19 +50,27 @@ export function decideReview(input: {
   sessionFiles?: number
   /** Changed file paths, checked against alwaysFullGlobs. */
   paths?: readonly string[]
+  /** Consecutive full reviews with zero new findings (optional; 0 = milestone escalation always armed, backward compatible). */
+  noNewReviews?: number
   chain: number
   config: Pick<
     ReviewGateConfig,
-    'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs'
+    'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs' | 'noNewReviewsBeforeDemotion'
   >
 }): ReviewAction {
-  const { writeFiles, bashWrites, sessionFiles, paths, chain, config } = input
+  const { writeFiles, bashWrites, sessionFiles, paths, noNewReviews, chain, config } = input
   if (writeFiles === 0 && !bashWrites) return 'skip'
   if (config.mode === 'off') return 'skip'
   if (chain >= config.maxChain) return 'skip'
   if (config.mode === 'micro') return 'micro'
   if (config.mode === 'full') return 'full'
-  const drifted = (sessionFiles ?? 0) >= config.milestoneAtFiles
+  // Convergence fatigue guard (v5-F1): after K consecutive zero-finding full
+  // reviews the milestone drift signal is treated as spent — it can no longer
+  // escalate to full on its own. micro/full base grading, maxChain stop-loss
+  // and claimed decay are untouched.
+  const drifted =
+    (sessionFiles ?? 0) >= config.milestoneAtFiles &&
+    (noNewReviews ?? 0) < (config.noNewReviewsBeforeDemotion ?? 3)
   const core = (paths ?? []).some((p) =>
     config.alwaysFullGlobs.some((g) => globToRegExp(g).test(p)),
   )
@@ -132,6 +142,8 @@ export interface GateState {
   } | null
   /** Set by the review_acknowledge tool — the sole review-completion signal. */
   acknowledged: boolean
+  /** Consecutive full reviews settled with zero new findings (convergence fatigue counter; v5-F1). */
+  noNewReviews: number
 }
 
 export function createState(): GateState {
@@ -143,6 +155,7 @@ export function createState(): GateState {
     bashCommands: [],
     pendingReview: null,
     acknowledged: false,
+    noNewReviews: 0,
   }
 }
 
