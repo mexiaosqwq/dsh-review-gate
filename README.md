@@ -27,6 +27,14 @@ DSH 的回合级代码复审闸门。每当一个回合里发生了文件写入�
 4. **兜底拦截与止损**：回合将关时 pendingReview 非空且未 ack → steer 一条极简驱动消息（指向回执工具），pendingReview 保留（驱动后补 ack 仍有效）；连续未 ack 关闭最多 `maxChain` 次后止损放行。
 5. 防循环与恢复：用户新消息被认领（`agent/inbox/claimed`）时 chain 衰减 1——止损后**每个用户回合保底恢复 1 轮复审**；无写操作且无 bash 命中的回合把 chain 清零。
 
+## 部署约定
+
+**Slot 所有权与依赖链路**：本插件与 dsh-fs-observation-policy 消费同类文件系统信号，但两者不同 slot、互不竞争——policy 挂在 base 层先激活，其 fs-intent 监听器不调 `next()` 即终裁整链（waterfall first-registrant 语义，realloop veto 测试实证），因此在 v5-T3 之前 review-gate 的 fs-intent 监听器从未被调用过（死车道），现已整体清除。**结论：review-gate 不依赖 fs-intent 车道，无 slot 竞争敏感面**——写跟踪完全走自有通道（见下），升级/换层不影响分档决策与拦截行为。
+
+**tools/result 兜底为何充分**：写跟踪的完整信号面 = `tools/result`（write/edit 按 `writeTools` 清单识别）+ bash 写模式启发式（partial：bash 直写不进 FileSystem service，事件层不可见，只有命令模式启发式部分覆盖——方向保守，宁多触发不漏触发）。fs-intent 本可覆盖「走 FileSystem service 但工具名不在 writeTools 的未来工具」，但该能力在宿主上从未生效（上述死车道），删除无行为回退——单信号时代 Set.add 幂等性天然防同文件重复计数。
+
+**重启契约**：宿主加载插件 bundle 后不重读磁盘——更新插件代码后必须重启目标 profile 才生效（实测教训：v3.3 修复提交后 16 小时旧 bundle 仍在跑，造成拦截-重发循环复发与排查误导）。`npm run build` 只更新 `lib/`，不触碰运行中的宿主。
+
 ## 安装
 
 ```sh
