@@ -217,3 +217,52 @@ test('realloop: in-turn review_acknowledge settles the gate; replay turn does no
   assert.ok(receipts.includes('"action":"micro"'), 'ack receipt must land in the redirected receiptDir')
   console.log('[verdict] ack settled in-turn; replay turn steered 0 times; receipt written')
 })
+
+test('realloop: waterfall single-slot semantics — first-registrant veto truncates later observers', async (t) => {
+  // 纯 cordis 语义演示：无需 testkit——隔离变量，不混入生产拓扑。
+  // 用途锚点：本测试是 fs-intent 车道死活判定的语义基座（静态五源论证
+  // 63db8eca0be3e4b1 的实证补全）——真机上 fs-observation-policy 在 base 层
+  // 先激活且其监听器不调 next()，本测试实证该形态下后注册的透明观察者
+  // （review-gate 的 fs-intent 监听器）永不被调用、veto 裁决直接返回。
+  // teardown 走 root fiber（cordis Context 无 dispose 方法，T1 实证）。
+  const ctx = new Context()
+  t.after(async () => {
+    await ctx.fiber.dispose()
+  })
+  const probeSeen = []
+
+  // 场景 A = 真机拓扑（policy 先注册，review-gate 观察者后注册）
+  const disposeVetoA = ctx.on('fs/write-intent', () => Promise.resolve({ kind: 'createIfAbsent' }))
+  const disposeProbeA = ctx.on('fs/write-intent', (target, actor, next) => {
+    probeSeen.push(target.displayPath)
+    return next()
+  })
+  const outA = await ctx.waterfall(
+    'fs/write-intent',
+    { displayPath: '/p.ts', targetKey: 'p' },
+    { agent: { id: 'a1' } },
+    () => undefined,
+  )
+  assert.equal(probeSeen.length, 0, 'later transparent observer must NEVER run when an earlier listener decides')
+  assert.deepEqual(outA, { kind: 'createIfAbsent' })
+  disposeVetoA()
+  disposeProbeA()
+
+  // 场景 B = 反序（透明观察者先注册）：观察者被调用，veto 裁决穿透返回
+  const disposeProbeB = ctx.on('fs/write-intent', (target, actor, next) => {
+    probeSeen.push(target.displayPath)
+    return next()
+  })
+  const disposeVetoB = ctx.on('fs/write-intent', () => Promise.resolve({ kind: 'replaceIfVersion', version: 1 }))
+  const outB = await ctx.waterfall(
+    'fs/write-intent',
+    { displayPath: '/q.ts', targetKey: 'q' },
+    { agent: { id: 'a1' } },
+    () => undefined,
+  )
+  assert.deepEqual(probeSeen, ['/q.ts'], 'transparent observer registered first does run')
+  assert.deepEqual(outB, { kind: 'replaceIfVersion', version: 1 })
+  disposeProbeB()
+  disposeVetoB()
+  console.log('[verdict] single-slot veto: A(later observer never ran) + B(observer ran, veto value passthrough) both hold')
+})
