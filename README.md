@@ -55,4 +55,6 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 # 回执（工具卡片可见），~/.dsh/storages/review-gate/receipts.jsonl 留有审计行
 ```
 
-单元测试：`npm test`（48 例：分档决策/写跟踪/上下文注入形态/回执工具六路径/防循环止损/claimed 衰减/apply 接线/多 agent 隔离/diff 取证与行数升档/bash 启发式）。
+单元测试：`node --test test/gate.test.mjs`（63 例：分档决策/写跟踪/上下文注入形态/回执工具六路径/防循环止损/claimed 衰减/apply 接线/多 agent 隔离/diff 取证与行数升档/bash 启发式）+ `node --test test/realloop.test.mjs`（5 例真时序车道，dsh-agent-loop-testkit 驱动真实 AgentLoop：挂载冒烟×2 / maxChain 止损裁决 / ack 即结算与重放零拦截 / waterfall 单槽 veto 语义）。
+
+已知边界：`fs/write-intent` 与 `fs/edit-intent` 车道在宿主上为死车道——dsh-fs-observation-policy 在 base 层先注册且其监听器不调 next() 终裁整链（waterfall veto 语义，realloop 语义测试实证），后注册的 review-gate fs-intent 监听器永不被调用；写跟踪由 `tools/result` 车道承担。claimed 衰减按 source 门控（`source.kind==='review-gate'` 的 driver 消息不衰减），否则 steer 续步 claim 会打穿 maxChain 止损。
