@@ -425,3 +425,13 @@ git commit -m "test: waterfall single-slot veto semantics verdict"
 - 五分区评审输入对齐、review_acknowledge 合法性矩阵——等真时序车道绿了再立独立计划。
 - actor 键控（agent.id → agent.session WeakMap 键）——纯研究项，数据前不动。
 - `createInboxStub`/`unsupportedInbox` ——harness 真 Agent 已覆盖需求，YAGNI 不引入。
+
+## 裁定偏差补记（lead 亲验探针后裁定，并入对拍基线；2026-09-28）
+
+T2 初版驱动配方三处错误（计划假设错误，同 ctx.dispose 类），lead 以 bare1-4 探针亲验修正：
+
+1. **`harness.claim` 会把消息从 driver 手里抢走**（claim 返回消息给调用者，driver 的 preStep 再 claim 得 0 → 空步 → idle，模型零调用）。loop-driven 测试**只 `inbox.append` + `agent.wakeDriver()`，不调 harness.claim**。claim 的真实用途=测试自己扮演 driver 时手动准入。
+2. **Agent 必须带路由**：`harness.create(id, { provider: 'scripted', model: 'm1' })`（AgentOptions.provider/model，runtime-types.d.ts L21-29），否则 `no provider/model` error。
+3. **ScriptedAdapter 需补最小路由方法**：`resolveModel → {provider, id, name}`、`prepareCall → {model, stream: (o) => this.stream(o)}`（LlmModelInfo 三字段即可，余可选）。
+4. **诊断监听器纪律**：waterfall 事件（如 agent/pre-step）上的诊断监听器**必须透明 `return next()`**——不调 next 的普通监听器即 veto 整链（cordis events.ts L234-243），返回 undefined 直接炸 preStep L920。T2 初版的 L920 崩 = 诊断探针自伤，非 testkit/agent-loop/gate 缺陷（bare1-4 实证：裸拓扑无 gate 完整跑通）。跨上下文诊断一律 `{ global: true }`。
+5. 实证通路：`running → pre-step(msgs=1) → [模型调用] → turn-stopping → idle`（bare4 全绿）。

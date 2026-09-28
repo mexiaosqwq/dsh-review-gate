@@ -465,10 +465,24 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
     // A newly claimed user message starts a fresh user turn: decay the review
     // chain by one so the gate regains protection after a maxChain stop-loss,
     // instead of staying silent until a write-free turn happens to occur.
-    yield ctx.on('agent/inbox/claimed', (payload: { agent: { id: string } }) => {
-      const state = states.get(payload.agent.id)
-      if (state && state.chain > 0) state.chain -= 1
-    })
+    // Source-gated (v4-T2-lib, revises the originally specced turn gate): the
+    // driver's steer message carries source.kind 'review-gate'
+    // (buildDriverMessage); its next-step re-claim used to cancel the chain
+    // increment the turn-stopping handler just applied and defeat maxChain
+    // entirely (realloop finding 2026-09-28: unbounded driver-message replay).
+    // Gating on the message source implements the "user message" wording of
+    // this comment literally, and is immune to the state-creation timing gap
+    // (state is born on the first write signal, AFTER the user message's own
+    // claim — a turn-based gate loses its baseline there; SEQ evidence in
+    // docs/handover/2026-09-28-v4-T2-lib-worker.md).
+    yield ctx.on(
+      'agent/inbox/claimed',
+      (payload: { agent: { id: string }; message: { source?: { kind?: string } } }) => {
+        if (payload.message?.source?.kind === 'review-gate') return
+        const state = states.get(payload.agent.id)
+        if (state && state.chain > 0) state.chain -= 1
+      },
+    )
 
     // The review instruction rides the dynamic runtime context (same channel
     // as memory recalls), not the conversation. While a review is pending,
