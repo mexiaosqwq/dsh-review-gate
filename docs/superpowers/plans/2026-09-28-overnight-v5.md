@@ -32,6 +32,12 @@
 - ②「防锚定二审」终稿：基于 DSH 工具面事实（插件无强制 fork 能力，subagent 是模型工具面）的可行形态 + 成本模型 + 数据门槛。
 - 落 docs/handover/2026-09-28-v5-spec-drafts-scout.md。
 
+### T6. scout：插件 × 平台契约全面对齐审计（用户晚间追加方向）【结果】
+- 方法：取证权威顺序顶层——`cordis_inspect_query` 实查 live 契约（Event.listEvents / Config.listConfigs / Tool.listTools）+ 本地 node_modules types 交叉。
+- 对拍面：review-gate 全部平台接触点逐条（事件监听签名、tools/result 载荷形状、Config schema 暴露、ack 工具注册、steer/assemble 用法、自定义 source kind 机制、声明式 source folding）。
+- 产出：分级优化清单（现状 / 平台现行契约 / 优化方向 / 行数账 / 风险），按【已验证/观察/待研究】分级；**只出清单不落码**——晨间用户挑选后才立项施工。
+- 落 docs/handover/2026-09-28-v5-T6-contract-audit-scout.md。
+
 ## 禁区（今晚不做）
 - reviewerSubagent 落码（等 receipts 数据 ≥2 周）；client Review 面板（需 UI 设计输入）；任何 config 默认值变更；git push；删除/改写既有 commit。
 
