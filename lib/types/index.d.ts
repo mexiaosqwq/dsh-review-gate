@@ -1,6 +1,25 @@
-import type { ContextFormed, UserMessage } from '@deepseek-ai/dsh-llm';
+/**
+ * dsh-review-gate — automatic post-turn code review gate.
+ *
+ * After a turn in which the agent wrote files, steer the agent back for a
+ * graded self-review (light scan or full audit, auto-selected by change size)
+ * before the turn is allowed to close. Inspired by Qoder Security's
+ * progressive scan design; enforces the repo's "changes need a full review"
+ * rule at the harness level instead of by convention.
+ *
+ * Wiring layer (v5-R1 split): apply() + Config schema + the receipt tool live
+ * here; instruction text/builders are in ./instruction.js and the state
+ * machine in ./state.js. Everything below re-exports the full public surface
+ * so `import * as gate from 'dsh-review-gate'` keeps working unchanged.
+ *
+ * @module dsh-review-gate
+ */
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import type { ReviewGateConfig } from './state.js';
+export * from './instruction.js';
+export * from './state.js';
 /**
  * Declare the plugin's own user-message source kind. The client renders any
  * user message whose source kind is not 'user' as a collapsed context node
@@ -14,29 +33,8 @@ declare module '@deepseek-ai/dsh-llm' {
         } & ContextFormed;
     }
 }
-/** Review depth selection. `auto` grades by changed-file count; fixed modes always apply when writes happened. */
-export type ReviewMode = 'off' | 'micro' | 'full' | 'auto';
-export interface ReviewGateConfig {
-    /** `off` disables the gate entirely. */
-    readonly mode: ReviewMode;
-    /** At or above this many changed files, `auto` grades a turn as `full`. */
-    readonly fullAtFiles: number;
-    /** At or above this many added/removed diff lines, the pending instruction escalates to `full`. */
-    readonly fullAtLines: number;
-    /** Cumulative session files since the last full review that force a milestone audit. */
-    readonly milestoneAtFiles: number;
-    /** Maximum consecutive review turns (review found a bug, agent fixed it, gate fires again). */
-    readonly maxChain: number;
-    /** Tool names whose executions count as code writes. bash is deliberately excluded. */
-    readonly writeTools: readonly string[];
-    readonly ignoreGlobs: readonly string[];
-    readonly alwaysFullGlobs: readonly string[];
-    readonly pitfallsFile?: string;
-    /** Receipt audit-log directory. Defaults to ~/.dsh/storages/review-gate. */
-    readonly receiptDir?: string;
-}
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
-    mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
+    mode: z<"micro" | "full" | "off" | "auto", "micro" | "full" | "off" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
     fullAtLines: z<number, number, "defined">;
     milestoneAtFiles: z<number, number, "defined">;
@@ -47,7 +45,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
 }>>, Schemastery.ObjectT<NoInfer<{
-    mode: z<"off" | "micro" | "full" | "auto", "off" | "micro" | "full" | "auto", "defined">;
+    mode: z<"micro" | "full" | "off" | "auto", "micro" | "full" | "off" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
     fullAtLines: z<number, number, "defined">;
     milestoneAtFiles: z<number, number, "defined">;
@@ -58,88 +56,6 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
 }>>, "plain">;
-export type ReviewAction = 'skip' | 'micro' | 'full';
-/** Decide whether the closing turn owes a review, and at what depth. */
-export declare function decideReview(input: {
-    writeFiles: number;
-    /** A bash command matched the write-pattern heuristic (no file path known). */
-    bashWrites?: boolean;
-    /** Cumulative session files since the last full review — drift toward a milestone audit. */
-    sessionFiles?: number;
-    /** Changed file paths, checked against alwaysFullGlobs. */
-    paths?: readonly string[];
-    chain: number;
-    config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs'>;
-}): ReviewAction;
-/**
- * Minimal glob to RegExp for ignoreGlobs: double-star spans directories (and
- * the slash before it is optional), single-star stays within one segment. A
- * literal question-mark wildcard is NOT supported — it would collide with the
- * quantifier character that the globstar expansion introduces (real bug
- * caught by the glob round-trip check); add an explicit pattern instead.
- */
-export declare function globToRegExp(glob: string): RegExp;
-/**
- * bash commands that very likely wrote to the filesystem. bash process writes
- * bypass the FileSystem service entirely, so this command-pattern heuristic is
- * the only partial cover for the blind spot — it arms a review, never blocks.
- */
-export declare const BASH_WRITE_RE: RegExp;
-/** Record one tool execution as a code write when its tool is a tracked write tool. */
-export declare function trackWrite(files: Set<string>, toolName: string, args: unknown, config: Pick<ReviewGateConfig, 'writeTools' | 'ignoreGlobs'>): void;
-/**
- * Append one receipt as a JSON line. Audit must never break the turn: every
- * failure is swallowed.
- */
-export declare function appendReceipt(dir: string, receipt: Record<string, unknown>): Promise<void>;
-/**
- * Evidence for the review: the git diff of the touched files, or null when no
- * git repo / git failure / empty diff. Truncated to 300 lines so a huge change
- * cannot blow up the context.
- */
-export declare function collectDiff(files: readonly string[]): Promise<string | null>;
-/**
- * Legacy single-message form (instruction inside one folded context row).
- * Kept for compatibility; the live gate uses buildDriverMessage + assemble
- * injection instead. Tests still cover its shape.
- */
-export declare function buildReviewMessage(action: 'micro' | 'full', fileCount: number): UserMessage;
-/** Per-session gate state: files written during the open turn + consecutive review chain count. */
-export interface GateState {
-    files: Set<string>;
-    chain: number;
-    /** Cumulative files this session since the last full review (milestone drift). */
-    sessionFiles: number;
-    /** A bash command matched BASH_WRITE_RE during the open turn. */
-    bashWrites: boolean;
-    /** The matched bash commands (<= 5), shown to the reviewing model. */
-    bashCommands: string[];
-    /** displayPath recorded by the latest fs-intent signal (same-file dedup across signal shapes). */
-    lastIntentPath?: string;
-    /** While set, the assemble listener injects the review instruction as a runtime-context section. */
-    pendingReview: {
-        action: 'micro' | 'full';
-        files: number;
-        /** Absolute paths snapshotted at arm time (state.files is cleared on interception). */
-        paths: string[];
-        /** Cached diff evidence; '' means "probed, none available". */
-        diffText?: string;
-    } | null;
-    /** Set by the review_acknowledge tool — the sole review-completion signal. */
-    acknowledged: boolean;
-}
-export declare function createState(): GateState;
-/** Full review instruction body — injected as a runtime-context section, never as chat content. */
-export declare function reviewInstructionText(action: 'micro' | 'full', files: number, pitfallsText?: string): string;
-/** Minimal driver message: exists to keep the loop running; the instruction rides in the runtime context. */
-export declare const DRIVER_HINT = "(review-gate) \u6536\u5C3E\u590D\u5BA1\u672A\u5B8C\u6210\uFF1A\u8BF7\u6267\u884C\u8FD0\u884C\u65F6\u4E0A\u4E0B\u6587\u4E2D\u7684\u590D\u5BA1\uFF0C\u5B8C\u6210\u540E\u8C03\u7528 review_acknowledge \u56DE\u6267\uFF0C\u7136\u540E\u8F93\u51FA\u6700\u7EC8\u603B\u7ED3\uFF08\u542B\u590D\u5BA1\u7ED3\u8BBA\u4E0E\u672C\u6B21\u4EFB\u52A1\u505A\u4E86\u4EC0\u4E48\uFF09\u3002\u82E5\u5DF2\u56DE\u6267\uFF0C\u672C\u6D88\u606F\u4E3A\u91CD\u53D1\u2014\u2014\u76F4\u63A5\u7ED3\u6848\uFF0C\u65E0\u9700\u518D\u767B\u8BB0\u3002";
-/**
- * Turn-closing hook: consume the write-time grading (pendingReview) and steer
- * the wrap-up review when one is armed. Depth capping (maxChain) happens at
- * write time in the tools/result listener; a write-free closing turn resets
- * the chain. The instruction itself rides the runtime-context section.
- */
-export declare function handleTurnStopping(state: GateState, steer: (message: UserMessage) => void, config: ReviewGateConfig): ReviewAction;
 /** Cordis plugin identity. */
 export declare const name = "review-gate";
 /**
@@ -151,4 +67,9 @@ export declare const name = "review-gate";
  * activate (real-host failure 2026-09-27).
  */
 export declare const inject: string[];
+/**
+ * Append one receipt as a JSON line. Audit must never break the turn: every
+ * failure is swallowed.
+ */
+export declare function appendReceipt(dir: string, receipt: Record<string, unknown>): Promise<void>;
 export declare function apply(ctx: Context, config: ReviewGateConfig): void;
