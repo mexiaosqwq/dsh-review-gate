@@ -15,6 +15,8 @@ DSH 的回合级代码复审闸门。每当一个回合里发生了文件写入�
 
 > **v4 计划（真时序测试基建）**：`docs/superpowers/plans/2026-09-28-review-gate-v4-realloop-tests.md`——用第一方 `dsh-agent-loop-testkit` 建真实 AgentLoop 测试车道，实证裁决真回合 steer、ack 自清重放零拦截、waterfall 单槽 veto 语义（fs-intent 车道死活）。
 
+> **夜间批次 v5**：`docs/superpowers/plans/2026-09-28-overnight-v5.md`（2026-09-28 晚自主推进剧本 + 晨间 digest 在文末）与 `docs/handover/decisions.md`（决定台账：每项拍板/挂起/可逆性）。
+
 ## 机制
 
 **时序目标：干活 → 复审 → 总结（含复审结论）**——复审是收尾流程的内嵌步骤，不是总结之后的补丁。
