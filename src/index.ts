@@ -27,7 +27,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
-import { BASH_WRITE_RE, clearTurnWrites, collectDiff, createState, decideReview, handleTurnStopping, isIgnored, trackWrite } from './state.js'
+import { BASH_WRITE_RE, clearTurnWrites, collectDiff, createState, decideReview, handleTurnStopping, trackWrite } from './state.js'
 import type { GateState, ReviewGateConfig } from './state.js'
 import { reviewInstructionText } from './instruction.js'
 
@@ -140,22 +140,10 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         states.set(exec.agent.id, state)
       }
       const filesBefore = state.files.size
-      // Dedup across signal shapes: fs-intent already recorded this file via
-      // its displayPath when the paths denote the same file (exact match or a
-      // relative/absolute suffix pair). Real-host finding 2026-09-27: without
-      // this gate the same write counted twice and inflated sessionFiles.
-      const filePath = (exec.arguments as { file_path?: unknown } | undefined)?.file_path
-      const intentPath = state.lastIntentPath
-      const sameAsIntent =
-        config.writeTools.includes(exec.name) &&
-        typeof filePath === 'string' &&
-        !!intentPath &&
-        (filePath === intentPath ||
-          filePath.endsWith(`/${intentPath}`) ||
-          intentPath.endsWith(`/${filePath}`))
-      if (!sameAsIntent) {
-        trackWrite(state.files, exec.name, exec.arguments, config)
-      }
+      // Single-signal era (v5-T3): the fs-intent lane is gone, no cross-shape
+      // dedup needed — trackWrite fires directly (Set.add keeps repeat
+      // emissions of the same file idempotent).
+      trackWrite(state.files, exec.name, exec.arguments, config)
       // bash write-pattern heuristic: a redirected/moving/removing command very
       // likely wrote somewhere we cannot track — arm a review for it.
       if (exec.name === 'bash') {
@@ -263,39 +251,6 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         return out
       },
     )
-
-    // Filesystem-level write signals: fs/write-intent and fs/edit-intent fire
-    // for EVERY tool that goes through the FileSystem service (write, edit,
-    // and any future/MCP fs-backed tool), regardless of tool name. An observer
-    // MUST return next()'s result — dropping it would skip peer listeners
-    // (e.g. the observation policy) and blocking would lose user data.
-    const trackFsIntent = (
-      target: { displayPath: string },
-      actor: { agent?: { id: string } } | undefined,
-    ): void => {
-      if (!actor?.agent?.id) return
-      // fs-intent fires BEFORE tools/result (intent → execute → result), so it
-      // is often the FIRST signal for a file: create the state here.
-      let state = states.get(actor.agent.id)
-      if (!state) {
-        state = createState()
-        states.set(actor.agent.id, state)
-      }
-      if (isIgnored(target.displayPath, config.ignoreGlobs)) return
-      const before = state.files.size
-      state.files.add(target.displayPath)
-      state.lastIntentPath = target.displayPath
-      if (state.files.size > before) state.sessionFiles += 1
-      gradeAndArm(state)
-    }
-    yield ctx.on('fs/write-intent', async (target, actor, next) => {
-      trackFsIntent(target, actor)
-      return next()
-    })
-    yield ctx.on('fs/edit-intent', async (target, actor, next) => {
-      trackFsIntent(target, actor)
-      return next()
-    })
   }, 'review-gate listeners')
 
   // The receipt tool: the model calls it after finishing the review demanded by

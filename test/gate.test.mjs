@@ -258,7 +258,7 @@ test('apply: effect dispose unregisters all listeners', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
   apply(ctx, baseConfig)
-  assert.equal(ctx.effectDisposers.length, 7, 'five core listeners + two fs-intent listeners yielded as disposers (tool registration collects itself via the plugin context)')
+  assert.equal(ctx.effectDisposers.length, 5, 'five core listeners yielded as disposers (tool registration collects itself via the plugin context; fs-intent listeners removed in v5-T3)')
   assert.equal(ctx.listeners.get('agent/turn-stopping').length, 1)
   for (const d of ctx.effectDisposers) d()
   for (const event of ['tools/result', 'agent/turn-stopping', 'agent/disposed']) {
@@ -651,33 +651,10 @@ test('apply: harmless bash command does not arm the gate', async () => {
 
 // ---- v3: signal layer (fs-intent), noise filter, milestone audit, cost meter ----
 
-test('apply: fs/write-intent passes through next() and tracks displayPath', async () => {
-  const { apply } = await import('../lib/index.js')
-  const ctx = fakeCtx()
-  apply(ctx, baseConfig)
-  const steered = []
-  const agent = { id: 'fsi', steer: (m) => steered.push(m) }
-  const listener = ctx.listeners.get('fs/write-intent')?.[0]
-  assert.ok(listener, 'fs/write-intent listener registered')
-  let nextCalled = false
-  await listener({ targetKey: '/x.ts', displayPath: '/x.ts' }, { agent }, () => { nextCalled = true })
-  assert.ok(nextCalled, 'waterfall must pass through — blocking writes would lose data')
-  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
-  assert.equal(steered.length, 1, 'fs write-intent arms the gate')
-})
-
-test('apply: fs/edit-intent also tracks without blocking', async () => {
-  const { apply } = await import('../lib/index.js')
-  const ctx = fakeCtx()
-  apply(ctx, baseConfig)
-  const steered = []
-  const agent = { id: 'fei', steer: (m) => steered.push(m) }
-  const listener = ctx.listeners.get('fs/edit-intent')?.[0]
-  assert.ok(listener, 'fs/edit-intent listener registered')
-  await listener({ targetKey: '/y.ts', displayPath: '/y.ts' }, { agent }, () => ({ version: 'v1' }))
-  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
-  assert.equal(steered.length, 1, 'fs edit-intent arms the gate')
-})
+// v5-T3: the fs/write-intent and fs/edit-intent tests were removed — the lane
+// is no longer wired (dead-lane code cleared; verdict = veto semantics double
+// closure). Their pass-through semantics documentation lives on in the
+// realloop veto test.
 
 test('ignoreGlobs: matched paths never arm the gate', async () => {
   const { apply } = await import('../lib/index.js')
@@ -822,29 +799,30 @@ test('full instruction carries the Codex reviewer recipe', async () => {
   assert.ok(text.includes('不可信分析数据'), 'injected evidence is declared untrusted data')
 })
 
-// ---- v3.3: real-host state machine fixes (dual-signal dedup, ack self-clear) ----
+// ---- v3.3: real-host state machine fixes (ack self-clear; dual-signal dedup
+// was cleared in v5-T3 with the dead fs-intent lane) ----
 
-test('fs-intent and tools/result signals dedupe the same file', async () => {
+test('tools/result re-emission of the same file counts once (Set idempotence)', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
   apply(ctx, { ...baseConfig, milestoneAtFiles: 2 })
   const steered = []
   const agent = { id: 'dd', steer: (m) => steered.push(m) }
-  // Real order: intent fires first with displayPath, then tools/result with file_path.
-  const writeIntent = ctx.listeners.get('fs/write-intent')?.[0]
-  await writeIntent({ targetKey: '/q/x.ts', displayPath: '/q/x.ts' }, { agent }, () => undefined)
+  // v5-T3 semantics: single signal (tools/result), repeat emissions of the
+  // same file_path collapse via Set.add — x twice + y + z = 3 real files.
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/q/x.ts' }, agent })
   ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/q/x.ts' }, agent })
   ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/q/y.ts' }, agent })
   ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/q/z.ts' }, agent })
   ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
   assert.equal(steered.length, 1)
-  // x counted once (dedup) + y + z = 3 real files, not 4 — check the assemble
-  // injection, which is where the file count lives (the driver hint is count-free).
+  // Check the assemble injection, which is where the file count lives (the
+  // driver hint is count-free).
   const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
   const a = { contexts: [], sections: [], tools: [], variables: {} }
   const out = await listener(a, { agent }, async () => a)
   const sec = out.contexts.find((c) => c.name === 'review-gate')
-  assert.ok(sec?.text.includes('3 个文件'), 'dedup keeps the true file count (3, not 4)')
+  assert.ok(sec?.text.includes('3 个文件'), 'idempotence keeps the true file count (3, not 4)')
 })
 
 test('ack self-clears pendingReview — a replayed close never steers again', async () => {

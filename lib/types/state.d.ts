@@ -48,8 +48,6 @@ export interface GateState {
     bashWrites: boolean;
     /** The matched bash commands (<= 5), shown to the reviewing model. */
     bashCommands: string[];
-    /** displayPath recorded by the latest fs-intent signal (same-file dedup across signal shapes). */
-    lastIntentPath?: string;
     /** While set, the assemble listener injects the review instruction as a runtime-context section. */
     pendingReview: {
         action: 'micro' | 'full';
