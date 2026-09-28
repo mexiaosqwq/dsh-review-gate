@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -150,7 +150,7 @@ function waitIdle(ctx, agent, timeoutMs = 8000) {
   })
 }
 
-test('realloop: write turn intercepts at turn-stopping and steers with the file list', async (t) => {
+test('realloop: write turn intercepts at turn-stopping and replays the driver message with the review file count', async (t) => {
   const { ctx, harness, agent, steered } = await mountGateHarness(t)
   // 队列按「最多 maxChain=2 次拦截 + 1 次跳过」预算：write 后最多再要 3 个文本响应
   ctx.llm.registerAdapter(
@@ -176,4 +176,44 @@ test('realloop: write turn intercepts at turn-stopping and steers with the file 
   // about lib behavior (lib buildDriverMessage L305-312; probe evidence).
   assert.ok(JSON.stringify(steered[0]).includes('1 个文件'), 'driver message must report the changed-file count')
   console.log(`[verdict] steer count on unacked write turn: ${steered.length}`)
+})
+
+test('realloop: in-turn review_acknowledge settles the gate; replay turn does not re-steer', async (t) => {
+  const { ctx, harness, agent, steered, tmpDir } = await mountGateHarness(t)
+  const ackArgs = JSON.stringify({
+    action: 'micro',
+    files: ['/tmp/gate-e2e/probe-a.ts'],
+    findings: [],
+    fixes_made: false,
+    summary: 'e2e ack',
+  })
+  ctx.llm.registerAdapter(
+    ['scripted'],
+    new ScriptedAdapter([
+      toolCallChunks('call_1', 'write', JSON.stringify({ file_path: '/tmp/gate-e2e/probe-a.ts', content: 'x' })),
+      toolCallChunks('call_2', 'review_acknowledge', ackArgs),
+      textChunks('done'),
+      textChunks('acknowledged, closing'),
+    ]),
+  )
+  ctx.tools.register(stubWriteTool)
+  // Turn 1: write -> ack in the same turn (ack settles before turn-stopping).
+  const idle1 = waitIdle(ctx, agent)
+  agent.inbox.append('next-turn', userMessage('write a file'))
+  agent.wakeDriver()
+  await idle1
+  assert.equal(steered.length, 0, 'ack consumed in-turn must settle the gate before turn-stopping')
+
+  // Turn 2: client continuation replays the DRIVER_HINT verbatim as a new user
+  // message; the settled gate must not re-steer.
+  const idle2 = waitIdle(ctx, agent)
+  agent.inbox.append('next-turn', userMessage(gate.DRIVER_HINT))
+  agent.wakeDriver()
+  await idle2
+  assert.equal(steered.length, 0, 'replay turn after settled ack must not re-steer')
+
+  // Receipts land in the redirected tmpDir, not the live storages path.
+  const receipts = await readFile(join(tmpDir, 'receipts.jsonl'), 'utf8')
+  assert.ok(receipts.includes('"action":"micro"'), 'ack receipt must land in the redirected receiptDir')
+  console.log('[verdict] ack settled in-turn; replay turn steered 0 times; receipt written')
 })
