@@ -55,8 +55,8 @@ export const Config = z.object({
   writeTools: z.array(z.string()).default(['write', 'edit']),
   ignoreGlobs: z.array(z.string()).default([]),
   alwaysFullGlobs: z.array(z.string()).default([]),
-  pitfallsFile: z.string(),
-  receiptDir: z.string(),
+  pitfallsFile: z.string().required(false),
+  receiptDir: z.string().required(false),
   noNewReviewsBeforeDemotion: z.number().min(0).default(3),
 })
 
@@ -210,12 +210,33 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       },
     )
 
-    // The review instruction rides the dynamic runtime context (same channel
-    // as memory recalls), not the conversation. While a review is pending,
-    // every request in the reviewing turn sees the instruction section.
+    /**
+     * The review instruction rides the dynamic runtime context (same channel
+     * as memory recalls), not the conversation. While a review is pending,
+     * every request in the reviewing turn sees the instruction section.
+     *
+     * Dependency note: `context.agent` is a runtime extension that dsh-agent's
+     * `assembleContextFor` adds to the core AssembleContext contract (which
+     * only declares scope/signal, dsh-system-prompt types). It exists only
+     * while the type-augmentation import at the top of this file
+     * (`import type {} from '@deepseek-ai/dsh-agent'`) stays in place — if it
+     * or the host-side extension disappears, this listener degrades silently
+     * (the review gate stops arming) rather than throwing. The receipt below
+     * makes that degradation observable.
+     */
     yield ctx.on(
       'system-prompt/assemble',
       async (assembly: PromptAssembly, context: { agent?: { id: string } }, next: () => Promise<PromptAssembly>) => {
+        // Degradation alarm (v5-P2): an armed review with no agent identity on
+        // the assemble context means the gate cannot reach its state — silent
+        // stop. One receipt per occurrence: this path appearing at all means
+        // the gate is already dead, no throttling needed.
+        if (!context.agent?.id && [...states.values()].some((s) => s.pendingReview)) {
+          void appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
+            agentId: 'unknown',
+            outcome: 'assemble_degraded',
+          })
+        }
         const out = await next()
         const state = context.agent?.id ? states.get(context.agent.id) : undefined
         if (state?.pendingReview) {
@@ -245,7 +266,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
               : ''
           out.contexts.push({
             name: 'review-gate',
-            text: reviewInstructionText(p.action, p.files, pitfallsText) + diffSection + bashSection,
+            text: reviewInstructionText(p.action, p.files, pitfallsText, config.pitfallsFile) + diffSection + bashSection,
           })
         }
         return out

@@ -941,3 +941,30 @@ test('receipts: acknowledged settlement line carries outcome:acknowledged', asyn
     await fs.rm(receiptDir, { recursive: true, force: true })
   }
 })
+
+test('assemble: armed review with no agent identity lands an assemble_degraded receipt', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-p2-degraded-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const agent = { id: 'deg', steer: () => {} }
+  try {
+    const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+    // Arm the gate for one agent, then hit assemble without any agent identity.
+    ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/d.ts' }, agent })
+    const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+    await listener(assembly, {}, async () => assembly)
+    await new Promise((r) => setTimeout(r, 25))
+    const rec = JSON.parse((await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim())
+    assert.equal(rec.outcome, 'assemble_degraded')
+    assert.equal(rec.agentId, 'unknown')
+    // With an agent identity on context, no alarm fires.
+    ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/e.ts' }, agent })
+    await listener(assembly, { agent }, async () => assembly)
+    await new Promise((r) => setTimeout(r, 25))
+    const lines = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim().split('\n')
+    assert.equal(lines.length, 1, 'normal assemble does not alarm')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
