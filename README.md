@@ -56,16 +56,25 @@ flowchart TD
 | bash 启发式 | bash 直写不进事件层，命令模式启发式兜底（宁多触发不漏触发） |
 | 降级可观测 | 运行时上下文装配异常时落 `assemble_degraded` 审计行，闸门失活可发现 |
 
-## 安装
+## 安装与卸载
 
-要求：DSH `0.1.7-rc.2` 及以上（peer 依赖 `@deepseek-ai/*` 同版本线）。
+### 前置
+
+- [DSH（DeepSeek Harness）](https://github.com/deepseek-ai/deepseek-harness) 已安装——本插件针对 `0.1.7-rc.2` 开发（peer 依赖 `@deepseek-ai/*` 同版本线）
+- 一个在用的 profile（下文以 `web` 为例，换成你自己的 profile 名即可）
+
+### 安装
 
 ```sh
-git clone <本仓库> ~/dsh-review-gate
-dsh plugin --profile web add ~/dsh-review-gate
+git clone https://github.com/mexiaosqwq/dsh-review-gate.git ~/dsh-review-gate
+cd ~/dsh-review-gate
+npm install                                    # 装插件自身的 peer 依赖（cordis / dsh-agent / schemastery 等）
+dsh plugin --profile web add ~/dsh-review-gate # 注册进目标 profile
 ```
 
-安装即向 profile 插入 `id: review-gate` 一层（`cordis.patch.yml`，package.json 已声明 `dsh.bundle.patch`）。**重启目标 profile 后生效**（宿主加载 bundle 后不重读磁盘）。
+然后**重启目标 profile**——宿主只在启动时加载插件 bundle，之后不再重读磁盘。
+
+安装机制（一句话）：`dsh plugin add` 是 pnpm 透传，本地目录以 `link:` 符号链接进 profile，宿主按磁盘路径直接读源目录——所以**更新不需要重新 add**。
 
 验证：
 
@@ -74,6 +83,42 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 ```
 
 之后任意含文件写入的任务结束时：出现折叠的复审通知 → agent 被拉回复审 → 复审完成调用 `review_acknowledge`（工具卡片可见）→ `receipts.jsonl` 留下审计行。
+
+### 配置
+
+开箱即用（`auto` 分档），无需任何配置。要改键：在 **profile 层 patch**（`~/.dsh/profiles/<profile>/cordis.patch.yml`）追加一段针对 `id: review-gate` 的覆盖行：
+
+```yaml
+- id: review-gate
+  config:
+    mode: full
+    alwaysFullGlobs:
+      - "src/contracts/**"
+```
+
+两个语法要点（Cordis patch 方言）：
+
+- 带 `id` 且无 `insert` 的行 = 覆盖既有层；`config` 是**整段替换**，不做深合并（本插件 bundle 层的 config 为空 `{}`，所以追加即可，无需复述别的字段）
+- 不想持久化就用启动时临时挂载：`dsh --profile web --patch <文件>`
+
+改完重启 profile 生效。全部键与默认值见下节配置表（schema 权威：`dsh --profile web --dump-config-schema`）。
+
+### 更新
+
+```sh
+cd ~/dsh-review-gate && git pull && npm run build
+# 重启目标 profile
+```
+
+`lib/` 构建产物已入库：纯文档/测试改动只需 `git pull`；动了 `src/` 才需要 build（测试跑的是 `lib/`，忘 build 会得到旧码全绿的假象）。
+
+### 卸载
+
+```sh
+dsh plugin --profile web remove dsh-review-gate
+```
+
+重启 profile 后闸门即消失；`receipts.jsonl` 审计日志保留在 `receiptDir`，不随卸载删除。
 
 ## 配置
 
