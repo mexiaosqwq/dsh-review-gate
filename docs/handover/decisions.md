@@ -14,3 +14,4 @@
 | 2026-09-29 | 晨间拍板 3/4（reviewerSubagent / stop_loss 密度） | 维持缓办；实数据首读（2026-09-29）：真机 7 ack / 0 stop_loss / noNewReviews 全 0——stop_loss 密度无忧，reviewerSubagent 门槛仍不足（真机 full 仅 1 次） | 不适用 | receipts.jsonl 数据盘点 | 用户裁定缓办（数据已入档，随时复裁） |
 | 2026-09-29 | 晨间拍板 5（inspect 桥接 bug 报上游） | 用户裁定：暂不报（bug 现象与复现存 T6 报告①，随时翻案） | 不适用 | T6 报告① | 已裁定（暂不报） |
 | 2026-09-29 | closer P2 两候选（README 配置表补行 / 来源标注测试断言） | 已收编（2026-09-29，同测试隔离修复 commit）：README 表补 4 行（pitfallsFile + 同表缺口 milestoneAtFiles/ignoreGlobs/alwaysFullGlobs）、断言 +2 行 | 可逆：revert 单 commit | docs/handover/2026-09-28-v5-P2-CL-closer.md | 已收编 |
+| 2026-09-29 | 清理生产 receipts.jsonl 存量测试污染行 | 用户批准执行：按「测试文件声明的 fixture 名集合」精确过滤（34 名，删 392 行：ack1/2/3 各 91、selfclear 50、decay/clr/ack4 各 23），真机会话（session-* 与子代理裸 uuid 共 62 行）全保留；全量备份 receipts.jsonl.bak-2026-09-29（454 行），脚本一次性 /tmp/clean-receipts.mjs 跑后即弃 | 可逆：备份文件原样可回滚 | receipts.jsonl 数据盘点 + commit 7cf675e（测试侧防新增） | 已裁定（已执行） |
