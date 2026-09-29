@@ -17,6 +17,9 @@ const baseConfig = {
   writeTools: ['write', 'edit'],
   ignoreGlobs: [],
   alwaysFullGlobs: [],
+  // Test receipts must never land in the production audit log — appendReceipt
+  // self-creates the dir, so a deterministic per-run tmp path is enough.
+  receiptDir: join(_tmpdir(), 'rg-gate-test-' + process.pid),
 }
 
 test('decideReview: no writes -> skip', () => {
@@ -520,6 +523,8 @@ test('ack: instruction text demands the receipt call', async () => {
   }
   const { DRIVER_HINT } = await import('../lib/index.js')
   assert.ok(DRIVER_HINT.includes('review_acknowledge'), 'driver points at the receipt tool')
+  const annotated = reviewInstructionText('full', 1, '坑：globToRegExp 不支持 ? 通配', 'pitfalls.md')
+  assert.ok(annotated.includes('> 来源：pitfalls.md') && annotated.includes('坑：globToRegExp'), 'pitfalls body and provenance line injected')
 })
 
 // ---- v2 Task 2: git-diff evidence injected into the review instruction ----

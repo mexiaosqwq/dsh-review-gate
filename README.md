@@ -50,8 +50,12 @@ dsh plugin --profile web add ~/dsh-review-gate
 | `mode` | `auto` | `off` 关闭 / `micro` 固定快扫 / `full` 固定全面 / `auto` 按改动体量分档 |
 | `fullAtFiles` | `3` | `auto` 模式下，改动文件数达到该值走全面复审 |
 | `fullAtLines` | `150` | diff 增删行数达到该值，快扫升格全面（行数在取证时懒判定） |
+| `milestoneAtFiles` | `10` | `auto` 模式下，会话累计改动文件数达到该值视为漂移，升格全面复审（受 `noNewReviewsBeforeDemotion` 疲劳守卫钳制） |
 | `maxChain` | `2` | 连续未 ack 的拦截上限（止损） |
 | `writeTools` | `["write","edit"]` | 视为代码写入的工具名 |
+| `ignoreGlobs` | `[]` | glob 清单，命中路径的写入不计入复审触发（不支持 `?` 通配） |
+| `alwaysFullGlobs` | `[]` | glob 清单，命中路径的写入无条件走全面复审 |
+| `pitfallsFile` | （未设置） | 项目陷阱清单文件路径；插件激活时读一次，存在时全面复审指令追加「已知项目陷阱」节（含来源标注，按不可信分析数据对待） |
 | `receiptDir` | `~/.dsh/storages/review-gate` | 回执审计日志目录 |
 | `noNewReviewsBeforeDemotion` | `3` | 连续 K 次 full 复审零新发现后，会话漂移（milestone）不再升格全面复审（收敛疲劳防护；不影响基本分档与止损） |
 
