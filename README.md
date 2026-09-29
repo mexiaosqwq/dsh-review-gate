@@ -157,6 +157,8 @@ dsh plugin --profile web remove dsh-review-gate
 
 ## 开发
 
+> **AI 协作 / 贡献者必读**：[AGENTS.md](AGENTS.md) 是本仓库的项目知识库——架构红线、验证链、已知陷阱、文档路由都在里面。无论人还是 AI，动手改代码前先读它。
+
 ```
 ├─ src/
 │  ├─ index.ts        接线层：apply() + Config schema + review_acknowledge 工具注册 + 全部事件监听
