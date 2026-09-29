@@ -1,8 +1,3 @@
----
-description: "Automatic post-turn code review gate for DSH — after a turn that wrote files, the agent is steered back to self-review before the turn closes."
-kind: "package-bundle"
----
-
 <div align="center">
 
 # dsh-review-gate
