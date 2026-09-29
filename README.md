@@ -153,4 +153,4 @@ node --test test/realloop.test.mjs   # 真时序 6 例（较慢，单独跑）
 
 ## License
 
-MIT
+[MIT](LICENSE) © mexiaosqwq

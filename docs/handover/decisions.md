@@ -15,3 +15,4 @@
 | 2026-09-29 | 晨间拍板 5（inspect 桥接 bug 报上游） | 用户裁定：暂不报（bug 现象与复现存 T6 报告①，随时翻案） | 不适用 | T6 报告① | 已裁定（暂不报） |
 | 2026-09-29 | closer P2 两候选（README 配置表补行 / 来源标注测试断言） | 已收编（2026-09-29，同测试隔离修复 commit）：README 表补 4 行（pitfallsFile + 同表缺口 milestoneAtFiles/ignoreGlobs/alwaysFullGlobs）、断言 +2 行 | 可逆：revert 单 commit | docs/handover/2026-09-28-v5-P2-CL-closer.md | 已收编 |
 | 2026-09-29 | 清理生产 receipts.jsonl 存量测试污染行 | 用户批准执行：按「测试文件声明的 fixture 名集合」精确过滤（34 名，删 392 行：ack1/2/3 各 91、selfclear 50、decay/clr/ack4 各 23），真机会话（session-* 与子代理裸 uuid 共 62 行）全保留；全量备份 receipts.jsonl.bak-2026-09-29（454 行），脚本一次性 /tmp/clean-receipts.mjs 跑后即弃 | 可逆：备份文件原样可回滚 | receipts.jsonl 数据盘点 + commit 7cf675e（测试侧防新增） | 已裁定（已执行） |
+| 2026-09-29 | 开源许可定 MIT + 补 LICENSE 文件 | 用户拍板「那就 MIT」；署名用 git 作者身份 mexiaosqwq（版权行 2026），README License 节链 LICENSE | 可逆：换许可 = 重写 LICENSE + package.json | README 发布重写批（0bbd1e7）遗留项收尾 | 已裁定（已执行） |
