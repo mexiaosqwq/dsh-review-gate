@@ -3,45 +3,82 @@ description: "Automatic post-turn code review gate for DSH — after a turn that
 kind: "package-bundle"
 ---
 
+<div align="center">
+
 # dsh-review-gate
 
-## 是什么
+**把「改完必须复审」从文档约定，变成宿主强制机制**
 
-DSH 的回合级代码复审闸门。每当一个回合里发生了文件写入（write/edit），在回合即将关闭时自动把 agent 拉回来执行一轮自我复审，复审通过才允许收工。把「改动需要全面复审」从文档约定（AGENTS.md §10.5）升级为 harness 层的强制机制——不依赖 agent 自觉，不需要用户提醒。
+DSH（DeepSeek Harness）宿主插件 · 回合收尾自动拦截 · 结构化回执全程审计
 
-机制参照 Qoder Security 的渐进式扫描：小改动走 L1 轻度快扫，大改动走全面五步复审。
+![tests](https://img.shields.io/badge/tests-73%20passing-brightgreen)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
+![License](https://img.shields.io/badge/license-MIT-yellow)
+![platform](https://img.shields.io/badge/platform-DSH%20web%20profile-orange)
 
-> **v2 计划（回执化 + 证据化）**：`docs/superpowers/plans/2026-09-27-review-gate-v2.md`——`review_acknowledge` 结构化回执、git diff 证据注入、多 session 隔离、回执审计日志的设计与实施步骤。
+</div>
 
-> **v4 计划（真时序测试基建）**：`docs/superpowers/plans/2026-09-28-review-gate-v4-realloop-tests.md`——用第一方 `dsh-agent-loop-testkit` 建真实 AgentLoop 测试车道，实证裁决真回合 steer、ack 自清重放零拦截、waterfall 单槽 veto 语义（fs-intent 车道死活）。
+## 为什么需要它
 
-> **夜间批次 v5**：`docs/superpowers/plans/2026-09-28-overnight-v5.md`（2026-09-28 晚自主推进剧本 + 晨间 digest 在文末）与 `docs/handover/decisions.md`（决定台账：每项拍板/挂起/可逆性）。
+LLM 编码代理有个老问题：你在 AGENTS.md 里写「每次改动收尾必须全面复审」，模型答应得好好的，赶工时照样跳过——**文档约定靠自觉，自觉不可靠**。
 
-## 机制
+dsh-review-gate 把这条约定下沉到宿主层：一个回合里只要发生了文件写入（write/edit，或 bash 命中写模式），回合即将关闭时自动把 agent **拦回来**执行一轮自我复审。复审完成以 `review_acknowledge` 结构化回执为唯一完成信号，逐行落审计日志——不依赖模型自觉，不需要用户盯梢。
 
-**时序目标：干活 → 复审 → 总结（含复审结论）**——复审是收尾流程的内嵌步骤，不是总结之后的补丁。
+- 小改动走 **快扫**（L1），大改动走 **五步全面复审**——分档自动判定，参照 Qoder Security 的渐进式扫描
+- 全面复审方法论（coverage 诚实 / 证据链 / severity 校准 / 收敛判据）吸收自 **Codex Security 实码研究**
+- 拦截是「拉回复审」，不是「拒绝收工」——止损上限保证永不卡死对话
 
-1. 插件监听 `tools/result`：write/edit 类工具调用按 session 记录被写文件，**每次写即时重新分档**（`auto`：文件数 ≥ `fullAtFiles` 或 diff 行数 ≥ `fullAtLines` → 全面；否则 → 快扫）并置 pendingReview。bash 命令命中写模式（重定向/`sed -i`/`mv`/`rm`/`npm install`…）也会武装快扫。
-2. **事中引导（带证据）**：pendingReview 期间 `system-prompt/assemble` 监听器向 runtime-context 注入 `review-gate` 命名段——含复审指令 + **本回合 git diff 证据**（懒取证一次，300 行截断，非 git 降级）+ bash 疑似写入命令清单（bash 直写不进 diff）。不进对话流。
-3. **完成信号 = `review_acknowledge` 回执工具**：模型完成复审后必须调用它提交结构化回执（action / files / findings / fixes_made / summary），回执落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志（写入失败静默）。ack 后的回合关闭直接放行；每次新写操作会使旧回执失效（新改动欠新复审）。
-4. **兜底拦截与止损**：回合将关时 pendingReview 非空且未 ack → steer 一条极简驱动消息（指向回执工具），pendingReview 保留（驱动后补 ack 仍有效）；连续未 ack 关闭最多 `maxChain` 次后止损放行。
-5. 防循环与恢复：用户新消息被认领（`agent/inbox/claimed`）时 chain 衰减 1——止损后**每个用户回合保底恢复 1 轮复审**；无写操作且无 bash 命中的回合把 chain 清零。
+## 工作原理
 
-## 部署约定
+```mermaid
+flowchart TD
+    A["回合内文件写入<br/>write / edit / bash 写模式"] --> B["即时分档<br/>micro 快扫 · full 全面"]
+    B --> C["注入复审指令 + 本回合 git diff 证据<br/>（runtime-context 命名段，不进对话流）"]
+    C --> D{"回合将关闭时<br/>已回执？"}
+    D -- "是" --> E["结算放行<br/>回执落审计日志"]
+    D -- "否 · chain < maxChain" --> F["steer 拉回：先复审，<br/>review_acknowledge 回执"]
+    F --> C
+    D -- "chain 到顶" --> G["止损放行<br/>stop_loss 审计行"]
+```
 
-**Slot 所有权与依赖链路**：本插件与 dsh-fs-observation-policy 消费同类文件系统信号，但两者不同 slot、互不竞争——policy 挂在 base 层先激活，其 fs-intent 监听器不调 `next()` 即终裁整链（waterfall first-registrant 语义，realloop veto 测试实证），因此在 v5-T3 之前 review-gate 的 fs-intent 监听器从未被调用过（死车道），现已整体清除。**结论：review-gate 不依赖 fs-intent 车道，无 slot 竞争敏感面**——写跟踪完全走自有通道（见下），升级/换层不影响分档决策与拦截行为。
+1. **写即武装**：监听 `tools/result`，write/edit 按 session 记录被写文件，每次写**即时重新分档**（`auto`：文件数、diff 行数、会话漂移、命中 `alwaysFullGlobs` → 全面；否则快扫）并置 pendingReview。bash 命令命中写模式（重定向 / `sed -i` / `mv` / `npm install`…）也会武装。
+2. **带证据的事中引导**：pendingReview 期间向 runtime-context 注入 `review-gate` 命名段——复审指令 + **本回合 git diff**（懒取证一次，300 行截断，非 git 目录降级提示）+ bash 疑似写入命令清单。不进对话流，客户端折叠渲染。
+3. **唯一完成信号**：模型完成复审后必须调用 `review_acknowledge` 工具提交结构化回执（action / files / findings / fixes_made / summary），落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志。每次新写会使旧回执失效——**新改动欠新复审**。
+4. **拦截与止损**：回合将关时未回执 → steer 一条极简驱动消息把 agent 拉回；连续未回执最多 `maxChain` 次后止损放行，止损行为落 `stop_loss` 审计行，可统计复审放弃率。
+5. **防循环恢复**：用户新消息被认领时 chain 衰减 1——止损后每个用户回合保底恢复 1 轮复审；无写操作且无 bash 命中的回合把 chain 清零；`source.kind === 'review-gate'` 的自产驱动消息不参与衰减（防 steer 续步打穿止损）。
 
-**tools/result 兜底为何充分**：写跟踪的完整信号面 = `tools/result`（write/edit 按 `writeTools` 清单识别）+ bash 写模式启发式（partial：bash 直写不进 FileSystem service，事件层不可见，只有命令模式启发式部分覆盖——方向保守，宁多触发不漏触发）。fs-intent 本可覆盖「走 FileSystem service 但工具名不在 writeTools 的未来工具」，但该能力在宿主上从未生效（上述死车道），删除无行为回退——单信号时代 Set.add 幂等性天然防同文件重复计数。
+## 核心特性
 
-**重启契约**：宿主加载插件 bundle 后不重读磁盘——更新插件代码后必须重启目标 profile 才生效（实测教训：v3.3 修复提交后 16 小时旧 bundle 仍在跑，造成拦截-重发循环复发与排查误导）。`npm run build` 只更新 `lib/`，不触碰运行中的宿主。
+| 特性 | 说明 |
+|---|---|
+| 分档复审税 | `auto` 按改动体量分档：快扫管小改，全面复审留给大改与会话漂移，不让复审税吃掉小任务 |
+| diff 证据注入 | 复审指令自带本回合 git diff，消除「凭对话记忆复审」的漂移 |
+| 结构化回执 | findings 数组（文件 / 行号 / severity / note）+ fixes_made + summary，逐行审计可回放 |
+| 收敛疲劳防护 | 连续 K 次全面复审零新发现 → 会话漂移不再升格全面（借鉴 Codex stop-after-no-new，改造为会话级状态机） |
+| 止损与恢复 | `maxChain` 止损 + 用户回合保底恢复 + source 门控，防死循环也防误伤 |
+| 项目陷阱注入 | `pitfallsFile` 指向项目陷阱清单，激活时读一次，全面复审时逐条对照（显式标注为不可信分析数据，防提示注入） |
+| 多 session 隔离 | 按 agent.id 键控状态，多会话互不串扰 |
+| bash 启发式 | bash 直写不进事件层，命令模式启发式兜底（宁多触发不漏触发） |
+| 降级可观测 | 运行时上下文装配异常时落 `assemble_degraded` 审计行，闸门失活可发现 |
 
 ## 安装
 
+要求：DSH `0.1.7-rc.2` 及以上（peer 依赖 `@deepseek-ai/*` 同版本线）。
+
 ```sh
+git clone <本仓库> ~/dsh-review-gate
 dsh plugin --profile web add ~/dsh-review-gate
 ```
 
-重启目标 profile 后生效。
+安装即向 profile 插入 `id: review-gate` 一层（`cordis.patch.yml`，package.json 已声明 `dsh.bundle.patch`）。**重启目标 profile 后生效**（宿主加载 bundle 后不重读磁盘）。
+
+验证：
+
+```sh
+dsh --profile web --dump-config   # 应出现 id: review-gate 层
+```
+
+之后任意含文件写入的任务结束时：出现折叠的复审通知 → agent 被拉回复审 → 复审完成调用 `review_acknowledge`（工具卡片可见）→ `receipts.jsonl` 留下审计行。
 
 ## 配置
 
@@ -59,17 +96,61 @@ dsh plugin --profile web add ~/dsh-review-gate
 | `receiptDir` | `~/.dsh/storages/review-gate` | 回执审计日志目录 |
 | `noNewReviewsBeforeDemotion` | `3` | 连续 K 次 full 复审零新发现后，会话漂移（milestone）不再升格全面复审（收敛疲劳防护；不影响基本分档与止损） |
 
-**已知边界（ceiling）**：bash 里的文件写不走 FileSystem service（事件层不可见），只有命令模式启发式部分覆盖（有误报/漏报，只武装不阻断）；`agent.steer()` 为 `Agent` 接口契约成员（dsh-agent runtime-types 实证，四个注入方法全契约化）——`typeof` 守卫保留作纵深防御（防运行时装配差异），失效语义仍为不触发复审而非报错；写失败的工具调用（如 edit 报错）也会计入改动——方向保守，多触发一次复审无害；`turn-stopping` 语义是「模型暂时不欠响应」，回合中间的停顿也会触发拦截（可能与进行中的工作交叠）；用户中断会清空 inbox，待执行的复审随之取消（用户干预优先）；复审质量仍取决于模型自身执行指令的认真程度——闸门保证「复审必发生」（回执可审计），diff 证据消除「凭记忆复审」，但不保证「复审必找出所有 bug」；自定义 source kind 的消息在会话重建时依赖 inbox 投影对 source 的容忍（待审窗口极短，最坏丢失一次复审提示）。
+## 已知边界（诚实清单）
 
-## 验证
+闸门保证的是「**复审必发生**」（回执可审计）与「**复审必有证据**」（diff 注入），不保证「复审必找出所有 bug」——复审质量仍取决于模型执行指令的认真程度。
 
-```sh
-dsh --profile web --dump-config   # 应出现 id: review-gate 层
-# 重启 web profile 后，任意含文件写入的任务结束时会出现折叠的复审通知，
-# 且 agent 被拉回执行 L1 快扫 / 全面复审；复审完成后模型调用 review_acknowledge
-# 回执（工具卡片可见），~/.dsh/storages/review-gate/receipts.jsonl 留有审计行
+- bash 直写不走 FileSystem service（事件层不可见），命令模式启发式部分覆盖，有误报 / 漏报——只武装不阻断，方向保守（多触发一次复审无害）
+- 写失败的工具调用（如 edit 报错）也计入改动——同为方向保守
+- `turn-stopping` 语义是「模型暂时不欠响应」，回合中间的停顿也会触发拦截，可能与进行中的工作交叠
+- 用户中断会清空 inbox，待执行的复审随之取消（用户干预优先）
+- 自定义 source kind 的消息在会话重建时依赖 inbox 投影对 source 的容忍（待审窗口极短，最坏丢失一次复审提示）
+- `agent.steer()` 为 `Agent` 接口契约成员——`typeof` 守卫保留作纵深防御，失效语义为不触发复审而非报错
+
+## 面向插件开发者：部署笔记
+
+本节记录与宿主其他插件的共存契约，改机制前必读。
+
+- **Slot 所有权**：本插件与 dsh-fs-observation-policy 消费同类文件系统信号，但两者不同 slot、互不竞争。policy 挂在 base 层先激活，其 fs-intent 监听器不调 `next()` 即终裁整链（waterfall first-registrant 语义，realloop veto 测试双向实证）——v5-T3 之前 review-gate 的 fs-intent 监听器从未被调用过（死车道），现已整体清除。**结论：review-gate 不依赖 fs-intent 车道，无 slot 竞争敏感面。**
+- **tools/result 兜底为何充分**：写跟踪信号面 = `tools/result`（按 `writeTools` 清单识别）+ bash 写模式启发式（partial，见上方边界）。fs-intent 本可覆盖「走 FileSystem service 但工具名不在 writeTools 的未来工具」，但该能力在宿主上从未生效（上述死车道），删除无行为回退——单信号时代 Set.add 幂等性天然防同文件重复计数。
+- **重启契约**：宿主加载插件 bundle 后不重读磁盘——更新插件代码后必须重启目标 profile 才生效。`npm run build` 只更新 `lib/`，不触碰运行中的宿主。（实测教训：修复提交后 16 小时旧 bundle 仍在跑，造成拦截-重发循环复发与排查误导。）
+
+## 开发
+
+```
+├─ src/
+│  ├─ index.ts        接线层：apply() + Config schema + review_acknowledge 工具注册 + 全部事件监听
+│  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff
+│  └─ instruction.ts  复审指令文案：MICRO/FULL 两档五分区、reviewInstructionText、驱动消息
+├─ test/
+│  ├─ gate.test.mjs      67 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
+│  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop：止损裁决 / ack 即结算与重放零拦截 / veto 语义 / 双源交叉断言）
+├─ lib/               tsc 产物（package main 指向，fresh clone 即用）
+├─ cordis.patch.yml   bundle patch：向 profile 插一层 id: review-gate
+└─ docs/              设计计划（superpowers/plans/）与决定台账（handover/decisions.md）
 ```
 
-单元测试：`node --test test/gate.test.mjs`（68 例：分档决策/写跟踪/上下文注入形态/回执工具六路径/防循环止损/claimed 衰减/apply 接线/多 agent 隔离/diff 取证与行数升档/bash 启发式/收敛疲劳防护/receipts 终态）+ `node --test test/realloop.test.mjs`（6 例真时序车道，dsh-agent-loop-testkit 驱动真实 AgentLoop：挂载冒烟×2 / maxChain 止损裁决 / ack 即结算与重放零拦截 / waterfall 单槽 veto 语义 / noNewReviews 双源交叉断言）。
+```sh
+npm install            # package-lock.json 权威
+npm run build          # tsc → lib/；改 src 后必跑
+npm test               # gate 单元 67 例（import lib/ —— 先 build 再 test，否则测旧码）
+node --test test/realloop.test.mjs   # 真时序 6 例（较慢，单独跑）
+```
 
-已知边界：`fs/write-intent` 与 `fs/edit-intent` 车道已不再接线（v5-T3 清除；判定依据 = veto 语义双闭合——policy 先注册终裁、后注册观察者永不被调用），写跟踪由 `tools/result` 车道承担。claimed 衰减按 source 门控（`source.kind==='review-gate'` 的 driver 消息不衰减），否则 steer 续步 claim 会打穿 maxChain 止损。
+验证顺序：改 src → build → gate + realloop 全绿 → 提交（含 lib/）→ 重启目标 profile → 真机验收（receipts.jsonl 留痕）。
+
+## 设计档案
+
+- **v2 计划（回执化 + 证据化）**：`docs/superpowers/plans/2026-09-27-review-gate-v2.md`——`review_acknowledge` 结构化回执、git diff 证据注入、多 session 隔离、回执审计日志的设计与实施
+- **v4 计划（真时序测试基建）**：`docs/superpowers/plans/2026-09-28-review-gate-v4-realloop-tests.md`——第一方 `dsh-agent-loop-testkit` 驱动真实 AgentLoop 的测试车道，实证 steer 时序、ack 重放零拦截、waterfall 单槽 veto 语义
+- **v5 批次（夜间自主推进 + 晨间 digest）**：`docs/superpowers/plans/2026-09-28-overnight-v5.md`；所有用户拍板 / 缓办决定见 `docs/handover/decisions.md` 台账
+
+## 血统
+
+- **AGENTS.md §10.5**：改动收尾全面复审的文档约定——本插件就是它的强制化
+- **Qoder Security**：三层渐进扫描 → micro/full 两档分档复现
+- **Codex Security**（实码深研）：coverage 诚实、证据三连接、四视角数据流、severity 校准五条配方并入全面复审指令；stop-after-no-new 收敛语义改造为会话级疲劳防护；边界枚举方法论进入复审指令
+
+## License
+
+MIT
