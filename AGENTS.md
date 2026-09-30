@@ -13,7 +13,8 @@
 │  ├─ index.ts        接线层：apply() + Config schema + review_acknowledge/review_gate_config 工具注册 + 全部事件监听（副作用都在这）
 │  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff / BASH_WRITE_RE / globToRegExp
 │  ├─ instruction.ts  复审指令文案：MICRO_TEXT/FULL_TEXT（两档五分区）、reviewInstructionText、buildDriverMessage/buildReviewMessage
-│  └─ config-live.ts  活配置覆盖层：OVERLAY_KEYS / readOverlay / applyOverlay（原位合并）/ pickOverlay / saveOverlay（tmp+rename 原子写）
+│  ├─ config-live.ts  活配置覆盖层：OVERLAY_KEYS / readOverlay / applyOverlay（原位合并）/ pickOverlay / saveOverlay（tmp+rename 原子写）
+│  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
 ├─ test/
 │  ├─ gate.test.mjs      80 例单元（import ../lib/index.js —— 不 build 就测旧码）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
