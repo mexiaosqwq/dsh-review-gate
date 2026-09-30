@@ -12,12 +12,13 @@
 ├─ src/
 │  ├─ index.ts        接线层：apply() + Config schema + review_acknowledge/review_gate_config 工具注册 + 全部事件监听（副作用都在这）
 │  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff / BASH_WRITE_RE / globToRegExp
-│  ├─ instruction.ts  复审指令文案：MICRO_TEXT/FULL_TEXT（两档五分区）、reviewInstructionText、buildDriverMessage/buildReviewMessage
+│  ├─ instruction.ts  复审指令文案：MICRO_TEXT/FULL_TEXT（两档五分区）、reviewInstructionText、buildDriverMessage/buildReviewMessage、braceGuard（{{ → 自有变量引用，渲染回字节等同）
 │  ├─ config-live.ts  活配置覆盖层：OVERLAY_KEYS / readOverlay / applyOverlay（原位合并）/ pickOverlay / saveOverlay（tmp+rename 原子写）
-│  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
+│  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；本会话/全局作用域切换写 HTTP 面，会话写入带 slot 注入的 props.sessionId；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
+├─ scripts/           构建链闸门三件：build-client.mjs（包装 __ModuleLoader__ 闭包 + staging→smoke→原子发布 lib/client.js）· client-smoke.mjs（共享 smoke 执行器，构建发布前与已发布产物测试同源）· sanity-lib.mjs（host lib 导入自检）
 ├─ test/
-│  ├─ gate.test.mjs      80 例单元（import ../lib/index.js —— 不 build 就测旧码）
-│  ├─ client-bundle.test.mjs  2 例执行级 smoke：vm 跑 lib/client.js 字节（fake require 漏表即 throw）
+│  ├─ gate.test.mjs      81 例单元（import ../lib/index.js —— 不 build 就测旧码）
+│  ├─ client-bundle.test.mjs  3 例：已发布产物执行级 smoke ×2 + smoke 闸门拒绝形态 ×1（bare-name 漏表/未知外部/错 id/空 inject）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
 ├─ lib/               tsc 产物，已入库（package main 指向 lib/，fresh clone 即可用；改 src 后重新 build 并一并提交）
 ├─ docs/
@@ -43,7 +44,7 @@
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
 npm run build                            # tsc → sanity(lib 可导入) → tsc client → smoke 闸门 → 原子发布 lib/；改 src 后必跑
-npm test                                 # gate 80 例 + client-bundle smoke 2 例；先 build 再 test，否则测旧码
+npm test                                 # gate 81 例 + client-bundle 3 例；先 build 再 test，否则测旧码
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
 dsh plugin --profile web add ~/dsh-review-gate               # 安装/更新到 profile
@@ -57,14 +58,14 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 事件流（监听器全部在 index.ts 的 `ctx.effect` 内 `yield ctx.on(...)` 注册）：
 
 1. `tools/result` → trackWrite（按 writeTools 清单识别，读 `args.file_path`）+ bash 写模式启发式（BASH_WRITE_RE，宁多触发不漏触发）→ gradeAndArm：decideReview 即时分档置 pendingReview，每次新写使旧回执失效（新改动欠新复审）
-2. `system-prompt/assemble` → pendingReview 期间向 runtime-context 注入 `review-gate` 命名段：指令文本 + 懒取证 git diff（arm 后首次 collectDiff，300 行截断，非 git 降级提示）+ bash 命令清单；micro 档 diff 行数 ≥ fullAtLines 现场升格 full。**不进对话流**——自定义 MessageSourceMap kind `'review-gate'`，client 按 source.kind !== 'user' 折叠渲染
+2. `system-prompt/assemble` → **常驻**注入 `review-gate-usage` 段（触发词契约：用户说「审查/复审/review」→ 按会话档位执行本插件协议 + ack 回执）+ pendingReview 期间注入 `review-gate` 命名段：指令文本 + 懒取证 git diff（arm 后首次 collectDiff，300 行截断，非 git 降级提示）+ bash 命令清单；micro 档 diff 行数 ≥ fullAtLines 现场升格 full。两段文本都必须过 braceGuard。**不进对话流**——自定义 MessageSourceMap kind `'review-gate'`，client 按 source.kind !== 'user' 折叠渲染
 3. `agent/turn-stopping` → handleTurnStopping：已 ack → 结算放行（full 结算 sessionFiles 漂移）；未 ack 且 chain < maxChain → steer 驱动消息（source.kind='review-gate'），chain+1，pendingReview 保留；chain 到顶 → 止损放行 + stop_loss 审计行
 4. `review_acknowledge` 工具（apply 顶层注册）→ 唯一结算点：acknowledged=true、审计行、pendingReview=null、clearTurnWrites、chain=0；ack 后收到客户端重放 → 走残渣清理分支提示直接结案，不重记；**无 pendingReview（或零写入会话连 state 都没有）→ 按 `source: on_request` 落回执**（2026-09-30 触发词契约的主动评审结算——用户说「审查」而闸门未拦时，回执也要落账，游离 ack 因此可审计而非静默）。
 5. `agent/inbox/claimed` → chain 衰减 1（止损后每个用户回合保底恢复 1 轮复审）；**source-gate**：kind==='review-gate' 的自产 driver 消息跳过衰减
 6. `agent/disposed` → states 删除
 
 - 多 session 隔离 = `Map<agent.id, GateState>`；事件载荷缺 agent.id 直接跳过跟踪。
-- 活配置（UI 面板地基）：启动序 = schema 默认 → bundle patch → 存储覆盖层（receiptDir 下 config.json，原位合并即时生效）；HTTP 面 = `ctx.inject(['webServer'], …)` 惰性挂载两条 exact 路由（headless 下子 fiber pending 即无 HTTP，不破装）；`review_gate_config` 工具与 HTTP 共用同一条校验+持久化链；`pitfallsFile`/`receiptDir` 是启动级键，运行时面刻意不收。
+- 活配置（UI 面板地基）：启动序 = schema 默认 → bundle patch → 存储覆盖层（receiptDir 下 config.json，原位合并即时生效）；**会话分层（2026-09-30）**：effective(agent) = boot ⊕ 全局 overlay ⊕ 会话 overlay[agentId]，会话 overlay/派生 config 均内存态（agent.id 不跨重启，持久化即死数据），全局覆盖变更会重派生全部活会话配置；**作用域默认刻意不对称**：`review_gate_config` 工具缺省=session（对话调档只影响本会话，无 agentId 降级 global），HTTP 面缺省=global（curl 直调可预期）——工具描述文案是权威，改一处必对齐另一处；HTTP 面 = `ctx.inject(['webServer'], …)` 惰性挂载两条 exact 路由（headless 下子 fiber pending 即无 HTTP，不破装）；`pitfallsFile`/`receiptDir` 是启动级键，运行时面刻意不收。
 - 分档（decideReview，纯函数）：无写且无 bash 命中 → skip；mode off / chain 到顶 → skip；固定 mode 直用；auto 下 full = 文件数 ≥ fullAtFiles ‖ session 漂移 ≥ milestoneAtFiles（受 noNewReviewsBeforeDemotion 疲劳守卫钳制）‖ 命中 alwaysFullGlobs，否则 micro。
 - IO 边界：decideReview/handleTurnStopping/trackWrite 是纯函数（测试直调）；state.ts 里唯一 IO 是 collectDiff（child_process，2s 超时）；steer 与审计落盘副作用全留 index.ts。
 
@@ -88,6 +89,7 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 - **`node --test test/`（目录参数）在本机 node 24 报 MODULE_NOT_FOUND**——目录被当 CJS 模块加载；必须传文件路径。
 - bash 直写不进 FileSystem service，事件层不可见，只有命令模式启发式部分覆盖（有误报/漏报，只武装不阻断）——补覆盖改 BASH_WRITE_RE，别幻想事件能兜住它。
 - **借外部脚本必须读到尾再抄**：scripts/build-client.mjs 的 bootstrap 行 = `__modules["index.js"](__localRequire, module, module.exports); return module.exports;`——入口裸名（非 `./` 开头）会落平台 require 查表；嵌套模块工厂收到的 require 必须是 `__localRequire`（相对路径才能递归内联）。2026-09-30 真机 boot 全灭判例：抄截断模板手写 bootstrap + 「验证」只是拿产物对拍自己的假设（循环验证），build 绿 ≠ 能跑。
+- **gate 推送的 runtime-context 文本必须过 braceGuard**：宿主 renderContextSections 对每个 context 无条件插值且无 interpolate:false 逃生门，文本含 `{{...}}`（如 JSX style 的 diff 证据）即抛 malformed prompt variable reference → agent-loop preStep 死 → 整个回合失败且 gate 重武装再死（循环崩，75fbb58 判例）。新增注入文本一律 `text: braceGuard(...)`。
 - **client bundle 坏 = GUI 整体拒载**（"1 entry did not activate"，用户进不去网页），不是"少个 chip"——生成代码必须有执行级检查（client-bundle smoke 已入 npm test 常跑链），panel 类改动 ship 前必真机。
 - **lib/ 即线上（symlink 安装），中间态改动会直接生效**——防线已结构化：build 链自带双闸门（host lib 导入自检 + client smoke，staging 不过 = lib 保持上一个好产物，实测拒绝路径），坏产物到不了 lib/；提交只应在完整检查点做。
 
