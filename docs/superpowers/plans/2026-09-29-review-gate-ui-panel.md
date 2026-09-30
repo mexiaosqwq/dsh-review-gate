@@ -16,7 +16,7 @@
 | 可选挂载范式 = `ctx.inject(['webServer'], (webCtx) => webCtx.effect(() => webCtx.webServer.register(route)))`；headless 下子 fiber 保持 pending，不影响宿主组合 | `dsh-client-connection/lib/index.js` 真实消费方 |
 | 顶层 `inject` 加 webServer 会把插件钉死在 web profile（headless 永久 pending）→ 禁止 | cordis inject 门禁实现（`cannot get property without inject`） |
 | Config 消费点全部逐事件读 `config.x` → **原位 `Object.assign(config, patch)` 即全量即时生效**，零读点改动 | src/index.ts L110-119/146/176/257/269、src/state.ts 纯函数签名 |
-| 平台 seed 模块含 `schema-form`（M2 表单捷径）；client 构建 = tsdown helper + `dsh.client` 声明 + 纯度门 | dsh-plugin-development skill §6 |
+| ~~平台 seed 模块含 `schema-form`~~（2026-09-30 复查证伪：node_modules `@deepseek-ai/*` 与 DSH checkout 两个证据面均无 schema-form/SchemaForm——M2 表单纯手写，M1 已验证该路线；`dsh-client-ui-primitives` 是宿主自用 CSS modules 样式库，非表单组件） | 本仓库静态取证 |
 
 ## M0 = Phase 1：host 打底（已完成 2026-09-29：gate 80/80 + realloop 6/6；落地修正：覆盖层路径跟随生效 receiptDir（`config.receiptDir ?? RECEIPT_DIR`），非固定默认目录——receiptDir 是启动级键，boot 内路径稳定，且测试经 baseConfig 天然隔离生产文件）
 

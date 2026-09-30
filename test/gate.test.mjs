@@ -1281,3 +1281,56 @@ test('review_gate_config: set with no keys lists available keys, writeTools excl
   assert.ok(out.includes('未提供任何可设键'), 'empty set hints at available keys')
   assert.equal(out.includes('writeTools'), false, 'advanced internal knob stays off the tool face')
 })
+
+// ---- M2 observation plane: GET ships live state counters + receipt stats ----
+
+test('config api: GET returns per-session state summary after a tracked write', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const api = mountWebApi(ctx).find((r) => r.path === '/plugin/review-gate/config')
+  // Drive one tracked write through the real event listener (shape as emitted
+  // by the host's tools/result payload).
+  const onResult = ctx.listeners.get('tools/result')[0]
+  await onResult({
+    name: 'write',
+    arguments: { file_path: '/tmp/rg-m2.ts' },
+    agent: { id: 'agent-m2' },
+  })
+  const got = mockRes()
+  await api.handler(mockReq('GET'), got)
+  assert.equal(got.code, 200)
+  const s = got.body.states['agent-m2']
+  assert.ok(s, 'state summary keyed by agent id')
+  assert.equal(s.openWrites, 1, 'open-turn write count visible')
+  assert.equal(s.sessionFiles, 1, 'milestone drift counter visible')
+  assert.equal(s.chain, 0)
+  assert.deepEqual(s.pending, { action: 'micro', files: 1 }, 'one tracked file arms a micro review')
+  assert.equal(got.body.states.bogus, undefined)
+})
+
+test('config api: GET receipt stats count today only, last line surfaced', async () => {
+  const { apply } = await import('../lib/index.js')
+  const receiptDir = join(_tmpdir(), 'rg-api-stats-' + process.pid)
+  try {
+    await fs.mkdir(receiptDir, { recursive: true })
+    const now = Date.now()
+    const yesterday = now - 86_400_000
+    const lines = [
+      JSON.stringify({ ts: yesterday, action: 'micro', outcome: 'acknowledged' }),
+      JSON.stringify({ ts: now - 2000, outcome: 'stop_loss', action: 'full', chain: 2 }),
+      JSON.stringify({ ts: now - 1000, outcome: 'acknowledged', action: 'micro', findings: [] }),
+      '{torn line',
+    ]
+    await fs.writeFile(join(receiptDir, 'receipts.jsonl'), lines.join('\n') + '\n')
+    const ctx = fakeCtx()
+    apply(ctx, { ...baseConfig, receiptDir })
+    const api = mountWebApi(ctx).find((r) => r.path === '/plugin/review-gate/config')
+    const got = mockRes()
+    await api.handler(mockReq('GET'), got)
+    assert.deepEqual(got.body.receipts.today, { reviews: 1, stopLoss: 1 }, 'today-only counts')
+    assert.equal(got.body.receipts.last.action, 'micro', 'newest line surfaced as last')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
