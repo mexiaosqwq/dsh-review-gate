@@ -15,6 +15,13 @@
  * leaving the host React tree. One plugin-owned <style> tag carries the
  * keyframes + hover rules (deduped by id, mirroring the official CSS injector
  * pattern — the hand-rolled build has no CSS pipeline).
+ *
+ * 2026-09-30 second pass (user: a text label hogs the composer row): the chip
+ * shows one of four state glyphs instead of words — a shield (the gate) whose
+ * mark identifies the state: slash = off, dot = micro, bolt = auto, check on
+ * a filled shield = full. The full glyph's check is stroked in the host
+ * surface color so it stays visible on both themes. Unknown state (loading /
+ * API error) falls back to a plain shield; the popup keeps the words.
  */
 import { useEffect, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -29,6 +36,67 @@ const MODES: readonly Mode[] = ['off', 'micro', 'auto', 'full']
 const MODE_LABEL: Record<Mode, string> = { off: '关闭', micro: '快扫', auto: '自动', full: '全面' }
 const API = '/plugin/review-gate/config'
 const RESET = '/plugin/review-gate/config/reset'
+
+/** Shield silhouette shared by every glyph. */
+const SHIELD = 'M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z'
+
+/**
+ * The four state glyphs, one per review mode. 24×24 viewBox, currentColor
+ * stroke/fill throughout (theme tokens apply); rendered at 18px in the chip.
+ */
+function ModeIcon({ mode }: { mode: Mode | null }) {
+  const svg = {
+    width: 18,
+    height: 18,
+    viewBox: '0 0 24 24',
+    fill: 'none' as const,
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true as const,
+  }
+  if (mode === null) {
+    // State not known yet (mount fetch pending, or API unreachable).
+    return <svg {...svg}><path d={SHIELD} /></svg>
+  }
+  if (mode === 'off') {
+    return (
+      <svg {...svg}>
+        <path d={SHIELD} />
+        <path d="M5.5 4.5l13 15" />
+      </svg>
+    )
+  }
+  if (mode === 'micro') {
+    return (
+      <svg {...svg}>
+        <path d={SHIELD} />
+        <circle cx={12} cy={12.7} r={2.2} fill="currentColor" stroke="none" />
+      </svg>
+    )
+  }
+  if (mode === 'auto') {
+    return (
+      <svg {...svg}>
+        <path d={SHIELD} />
+        <path d="M13.6 7.5L9.9 13h2.6l-1.3 4.6L15 11.9h-2.6l1.2-4.4z" fill="currentColor" stroke="none" />
+      </svg>
+    )
+  }
+  // full: solid shield + check stroked in the surface color (visible on both
+  // themes — the fill is the label color, the check is the background).
+  return (
+    <svg {...svg}>
+      <path d={SHIELD} fill="currentColor" stroke="none" />
+      <path
+        d="M8.6 12.2l2.4 2.4 4.4-4.8"
+        strokeWidth={2.2}
+        style={{ stroke: 'var(--dsw-menu-surface-fill, #fff)' }}
+      />
+    </svg>
+  )
+}
 
 /** Keyframes + hover rules; injected once per page (id-deduped). */
 const PANEL_CSS = `
@@ -121,32 +189,32 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
     }
   }
 
-  const chipLabel = mode === null ? '审查' : `审查·${MODE_LABEL[mode]}`
+  const chipTitle =
+    mode === null ? '审查闸门力度（点击调整）' : `审查闸门力度：${MODE_LABEL[mode]}（点击调整）`
 
   return (
     <>
       <button
         type="button"
         data-review-gate="chip"
-        title="审查闸门力度（点击调整）"
-        aria-label="审查闸门力度（点击调整）"
+        title={chipTitle}
+        aria-label={chipTitle}
         onClick={() => { setOpen((v) => !v); setStatus(''); void refresh(scope) }}
         style={{
           border: 'none',
           borderRadius: 8,
-          padding: '4px 10px',
+          padding: '4px 8px',
           minHeight: 28,
-          fontSize: 12,
-          lineHeight: '20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           background: 'transparent',
           color: 'var(--dsw-alias-label-secondary, currentColor)',
           cursor: 'pointer',
-          whiteSpace: 'nowrap',
-          fontWeight: 500,
           opacity: mode === 'off' ? 0.5 : 1,
         }}
       >
-        {chipLabel}
+        <ModeIcon mode={mode} />
       </button>
       {open && (
         <>

@@ -23,3 +23,4 @@
 | 2026-09-30 | lib/ 发布闸门（中间态构建不得上线） | build 链三闸：sanity-lib（host 导入自检）+ client-smoke 共享执行器（构建发布前与产物测试同源）+ staging→smoke→POSIX rename 原子发布；拒绝路径端到端实测（注入 boot-kill 同款坏模块 → exit 1 + lib 字节不变） | 可逆：revert 562682d+c359988 | 用户判例「没一口气改全就直接生效」+「滥用项目构建道具」（npm install 探针式连跑毁树 / lib 当草稿区） | 已追认（full 全检查收口，连续两轮零新发现） |
 | 2026-09-30 | 「审查」触发词常驻契约 + 主动评审结算 | assemble 常驻 review-gate-usage 段（按会话档位执行插件协议 + ack 回执）；ack 两形态（无 pendingReview / 零写入无 state）落 source:on_request 回执，游离 ack 可审计；usage 段与 pendingReview 段均过 braceGuard | 可逆：revert 单 commit（4a69bb7） | 用户原话「告诉AI进行'审查'字眼,应该自动调用这个插件的审查」+ full 全检查实锤 ack 死头修复 | 已追认（本轮 full 协议即新契约首次实弹全链路） |
 | 2026-09-30 | 面板 UI 重设计（用户判「忒丑」） | 主题令牌化（--dsw-* 跟随明暗、玻璃拟态、分段控件、作用域切换）；取代 M1 硬编码暗色面板 | 可逆：revert chip 文件 | 用户原话「这他妈也忒丑了」 | 已实现（视觉待用户真机点验） |
+| 2026-09-30 | 面板 chip 文字标签 → 四态 SVG 图标 | 已落码：盾形 glyph 一枚一态（斜杠=off / 圆点=micro / 闪电=auto / 实心盾对勾=full），素盾=未知态回退；弹窗保留文字，chip title/aria 报档位名 | 可逆：revert chip 文件 | 用户原话「不是一段文字，这样太占地方了」 | 已实现（视觉待真机点验） |
