@@ -25,6 +25,8 @@
  */
 import { useEffect, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { GateDashboard, GateForm } from './review-gate-form.tsx'
+import type { GateStateSummary, ReceiptStats } from './review-gate-form.tsx'
 
 /** Props the slot renderer binds; `sessionId` comes from ui-session's merge. */
 export type ReviewGateChipProps = PropsRuntime<'conversation.input.left'>
@@ -36,6 +38,10 @@ const MODES: readonly Mode[] = ['off', 'micro', 'auto', 'full']
 const MODE_LABEL: Record<Mode, string> = { off: '关闭', micro: '快扫', auto: '自动', full: '全面' }
 const API = '/plugin/review-gate/config'
 const RESET = '/plugin/review-gate/config/reset'
+
+/** Narrow an unknown value to a Mode, or null. */
+const asMode = (v: unknown): Mode | null =>
+  typeof v === 'string' && (MODES as readonly string[]).includes(v) ? (v as Mode) : null
 
 /** Shield silhouette shared by every glyph. */
 const SHIELD = 'M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z'
@@ -116,21 +122,37 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
   const [scope, setScope] = useState<Scope>('session')
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState('')
+  // M2 form + dashboard state: effective config of the active scope, this
+  // session's live counters, and today's receipt totals.
+  const [cfg, setCfg] = useState<Record<string, unknown> | null>(null)
+  const [stateRow, setStateRow] = useState<GateStateSummary | null>(null)
+  const [today, setToday] = useState<ReceiptStats | null>(null)
 
-  /** Pull the effective mode for the current scope from the API. */
+  /** Pull the active scope's config/counters from the API. */
   const refresh = async (forScope: Scope): Promise<void> => {
     try {
-      const res = await fetch(API, { cache: 'no-store' })
+      const qs = forScope === 'session' && sessionId !== undefined
+        ? `?sessionId=${encodeURIComponent(sessionId)}`
+        : ''
+      const res = await fetch(API + qs, { cache: 'no-store' })
       if (!res.ok) return
       const body = (await res.json()) as {
-        config?: { mode?: unknown }
+        config?: Record<string, unknown>
         sessions?: Record<string, unknown>
+        states?: Record<string, GateStateSummary>
+        receipts?: ReceiptStats
+        effective?: Record<string, unknown>
       }
-      const asMode = (v: unknown): Mode | null =>
-        typeof v === 'string' && (MODES as readonly string[]).includes(v) ? (v as Mode) : null
       const global = asMode(body.config?.mode)
       const own = sessionId !== undefined ? asMode(body.sessions?.[sessionId]) : null
       setMode(forScope === 'session' ? (own ?? global) : global)
+      // Session view shows that session's effective full config; global view
+      // the global one. The form's drafts reset whenever this object changes.
+      setCfg((forScope === 'session' ? body.effective : body.config) ?? body.config ?? null)
+      setStateRow(forScope === 'session' && sessionId !== undefined
+        ? (body.states?.[sessionId] ?? null)
+        : null)
+      setToday(body.receipts ?? null)
     } catch {
       /* keep the previous label; the chip degrades, never throws */
     }
@@ -149,26 +171,39 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const applyMode = async (next: Mode): Promise<void> => {
+  /** One field, one POST; the echoed config refreshes the form + chip. */
+  const applyPatch = async (patch: Record<string, unknown>): Promise<boolean> => {
     setStatus('…')
     try {
       const res = await fetch(API, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(
-          scope === 'session' ? { mode: next, scope, sessionId } : { mode: next },
+          scope === 'session' ? { ...patch, scope, sessionId } : { ...patch },
         ),
       })
       if (!res.ok) {
         setStatus(`调整失败（HTTP ${String(res.status)}）`)
-        return
+        return false
       }
-      setMode(next)
-      setStatus(scope === 'session' ? `已生效（本会话）：${MODE_LABEL[next]}` : `已生效（全局默认）：${MODE_LABEL[next]}`)
+      const body = (await res.json()) as { config?: Record<string, unknown> }
+      if (body.config) {
+        setCfg(body.config)
+        const m = asMode(body.config.mode)
+        if (m) setMode(m)
+      }
+      const label = typeof patch.mode === 'string' ? MODE_LABEL[patch.mode as Mode] : undefined
+      setStatus(
+        (scope === 'session' ? '已生效（本会话）' : '已生效（全局默认）') + (label ? `：${label}` : ''),
+      )
+      return true
     } catch {
       setStatus('调整失败（网络异常）')
+      return false
     }
   }
+
+  const applyMode = (next: Mode): Promise<boolean> => applyPatch({ mode: next })
 
   const resetAll = async (): Promise<void> => {
     setStatus('…')
@@ -237,7 +272,7 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
           <div
             data-review-gate="panel"
             role="dialog"
-            aria-label="审查闸门力度"
+            aria-label="审查闸门调参"
             style={{
               position: 'fixed',
               left: 12,
@@ -246,6 +281,8 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
               margin: '0 auto',
               bottom: 84,
               zIndex: 9991,
+              maxHeight: '72vh',
+              overflowY: 'auto',
               borderRadius: 16,
               border: '1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))',
               background: 'var(--dsw-menu-surface-fill, rgba(250,250,252,0.92))',
@@ -306,6 +343,9 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
               })}
             </div>
 
+            {/* Dashboard: live counters next to the knobs they feed. */}
+            <GateDashboard stateRow={stateRow} receipts={today} cfg={cfg ?? {}} />
+
             {/* Mode segmented control. */}
             <div style={{
               display: 'flex', gap: 3, padding: 3, borderRadius: 12,
@@ -343,6 +383,13 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
                 )
               })}
             </div>
+
+            {/* Thresholds + glob lists + advanced drawer (M2 form). */}
+            {cfg !== null && (
+              <div style={{ marginTop: 12 }}>
+                <GateForm cfg={cfg} onPatch={applyPatch} />
+              </div>
+            )}
 
             <div
               data-review-gate="status"

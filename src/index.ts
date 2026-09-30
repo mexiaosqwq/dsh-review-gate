@@ -419,12 +419,18 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
               : null,
           }]),
         )
+        // `?sessionId=` opts into that session's effective full config (the
+        // panel form's initial values); absent → global view (back-compat).
+        const ownConfig = new URL(req.url ?? '/', 'http://localhost')
+          .searchParams.get('sessionId')
+        const effective = ownConfig !== null ? sessionConfigs.get(ownConfig) : undefined
         return respondJson(res, 200, {
           config: { ...config },
           overlay: { ...overlay },
           sessions,
           states: stateSummary,
           receipts: readReceiptStats(),
+          effective: effective ? { ...effective } : undefined,
         })
       }
       if (req.method !== 'POST') {
