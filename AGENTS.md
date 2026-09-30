@@ -10,15 +10,16 @@
 
 ```
 ├─ src/
-│  ├─ index.ts        接线层：apply() + Config schema + review_acknowledge 工具注册 + 全部事件监听（副作用都在这）
+│  ├─ index.ts        接线层：apply() + Config schema + review_acknowledge/review_gate_config 工具注册 + 全部事件监听（副作用都在这）
 │  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff / BASH_WRITE_RE / globToRegExp
-│  └─ instruction.ts  复审指令文案：MICRO_TEXT/FULL_TEXT（两档五分区）、reviewInstructionText、buildDriverMessage/buildReviewMessage
+│  ├─ instruction.ts  复审指令文案：MICRO_TEXT/FULL_TEXT（两档五分区）、reviewInstructionText、buildDriverMessage/buildReviewMessage
+│  └─ config-live.ts  活配置覆盖层：OVERLAY_KEYS / readOverlay / applyOverlay（原位合并）/ pickOverlay / saveOverlay（tmp+rename 原子写）
 ├─ test/
-│  ├─ gate.test.mjs      67 例单元（import ../lib/index.js —— 不 build 就测旧码）
+│  ├─ gate.test.mjs      80 例单元（import ../lib/index.js —— 不 build 就测旧码）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
 ├─ lib/               tsc 产物，已入库（package main 指向 lib/，fresh clone 即可用；改 src 后重新 build 并一并提交）
 ├─ docs/
-│  ├─ superpowers/plans/  3 份计划：v2 回执化设计 · v4 realloop 测试配方 · overnight-v5 批次剧本
+│  ├─ superpowers/plans/  4 份计划：v2 回执化设计 · v4 realloop 测试配方 · overnight-v5 批次剧本 · ui-panel 调参面板
 │  └─ handover/           ~19 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账
 ├─ cordis.patch.yml   bundle patch：- insert 一层 id: review-gate
 ├─ README.md          机制/配置/部署约定的权威现状描述（改机制必同步）
@@ -31,6 +32,7 @@
 - 写/改真时序测试前 → `docs/superpowers/plans/2026-09-28-review-gate-v4-realloop-tests.md`（testkit 驱动配方、mount 顺序、诊断监听器 veto 陷阱）
 - 追溯某决定为何拍板/缓办、用户授权记录 → `docs/handover/decisions.md`（决定台账：日期/动作/可逆性/依据）
 - 改复审指令文案 → `src/instruction.ts`（改后必须同步 gate.test.mjs 的形态断言）
+- 实现/审查「UI 调参面板」时 → `docs/superpowers/plans/2026-09-29-review-gate-ui-panel.md`（已定设计、webServer 契约取证、M0/M1 边界与禁区）
 - v2 设计背景（回执化 + diff 证据注入 + 多 session 隔离）→ `docs/superpowers/plans/2026-09-27-review-gate-v2.md`
 - handover/ 下其余报告是一次性历史，不路由；新报告只追加，不进本表。
 
@@ -39,7 +41,7 @@
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
 npm run build                            # tsc → lib/；改 src 后必跑
-npm test                                 # gate 单元 67 例；import lib/ —— 先 build 再 test，否则测旧码
+npm test                                 # gate 单元 80 例；import lib/ —— 先 build 再 test，否则测旧码
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
 dsh plugin --profile web add ~/dsh-review-gate               # 安装/更新到 profile
@@ -60,6 +62,7 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 6. `agent/disposed` → states 删除
 
 - 多 session 隔离 = `Map<agent.id, GateState>`；事件载荷缺 agent.id 直接跳过跟踪。
+- 活配置（UI 面板地基）：启动序 = schema 默认 → bundle patch → 存储覆盖层（receiptDir 下 config.json，原位合并即时生效）；HTTP 面 = `ctx.inject(['webServer'], …)` 惰性挂载两条 exact 路由（headless 下子 fiber pending 即无 HTTP，不破装）；`review_gate_config` 工具与 HTTP 共用同一条校验+持久化链；`pitfallsFile`/`receiptDir` 是启动级键，运行时面刻意不收。
 - 分档（decideReview，纯函数）：无写且无 bash 命中 → skip；mode off / chain 到顶 → skip；固定 mode 直用；auto 下 full = 文件数 ≥ fullAtFiles ‖ session 漂移 ≥ milestoneAtFiles（受 noNewReviewsBeforeDemotion 疲劳守卫钳制）‖ 命中 alwaysFullGlobs，否则 micro。
 - IO 边界：decideReview/handleTurnStopping/trackWrite 是纯函数（测试直调）；state.ts 里唯一 IO 是 collectDiff（child_process，2s 超时）；steer 与审计落盘副作用全留 index.ts。
 

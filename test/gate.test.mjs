@@ -155,10 +155,19 @@ test('handleTurnStopping: consecutive review chain respects maxChain', () => {
 function fakeCtx() {
   const listeners = new Map()
   const registered = []
+  const injectCalls = []
   const ctx = {
     listeners,
     registered,
+    injectCalls,
     tools: { register: (d) => { registered.push(d); return () => {} } },
+    // Lazy optional-service mount (e.g. ['webServer']): captured, NOT invoked
+    // by default — mirrors a headless composition where the service never
+    // arrives. Tests drive it manually via injectCalls.
+    inject(deps, fn) {
+      injectCalls.push({ deps, fn })
+      return () => {}
+    },
     on(event, fn) {
       if (!listeners.has(event)) listeners.set(event, [])
       listeners.get(event).push(fn)
@@ -972,4 +981,261 @@ test('assemble: armed review with no agent identity lands an assemble_degraded r
   } finally {
     await fs.rm(receiptDir, { recursive: true, force: true })
   }
+})
+
+// ---- live-config overlay (the web panel's source of truth) ----
+
+test('config-live: readOverlay on a missing dir degrades to {}', async () => {
+  const { readOverlay } = await import('../lib/index.js')
+  assert.deepEqual(readOverlay(join(_tmpdir(), 'rg-nonexistent-' + process.pid)), {})
+})
+
+test('config-live: applyOverlay mutates in place, copies arrays, ignores unknown keys', async () => {
+  const { applyOverlay } = await import('../lib/index.js')
+  const cfg = { ...baseConfig }
+  applyOverlay(cfg, { mode: 'full', ignoreGlobs: ['docs/**'], bogus: 'x' })
+  assert.equal(cfg.mode, 'full')
+  assert.deepEqual(cfg.ignoreGlobs, ['docs/**'])
+  assert.equal('bogus' in cfg, false, 'unknown key never leaks into config')
+})
+
+test('config-live: pickOverlay strips path keys and unknown keys', async () => {
+  const { pickOverlay } = await import('../lib/index.js')
+  const picked = pickOverlay({ mode: 'full', nope: 1, receiptDir: '/evil', pitfallsFile: '/evil.md' })
+  assert.deepEqual(picked, { mode: 'full' }, 'path keys are boot-level, never patchable')
+})
+
+test('config-live: saveOverlay round-trips', async () => {
+  const { saveOverlay, readOverlay } = await import('../lib/index.js')
+  const dir = join(_tmpdir(), 'rg-overlay-' + process.pid)
+  try {
+    await saveOverlay(dir, { mode: 'micro' })
+    assert.deepEqual(readOverlay(dir), { mode: 'micro' })
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('apply: stored overlay merges over boot config at activation', async () => {
+  const { apply, saveOverlay } = await import('../lib/index.js')
+  const receiptDir = join(_tmpdir(), 'rg-boot-' + process.pid)
+  await saveOverlay(receiptDir, { mode: 'full' })
+  try {
+    const cfg = { ...baseConfig, receiptDir }
+    const ctx = fakeCtx()
+    apply(ctx, cfg)
+    assert.equal(cfg.mode, 'full', 'overlay merged in place at boot')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('apply: headless (inject uncalled) still activates; exactly one webServer inject captured', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  assert.equal(ctx.injectCalls.length, 1, 'one lazy inject for the web API')
+  assert.deepEqual(ctx.injectCalls[0].deps, ['webServer'])
+  assert.equal(ctx.listeners.get('tools/result')?.length, 1, 'gate still armed in headless')
+})
+
+// ---- live-config HTTP API (mounted via the webServer inject) ----
+
+function mountWebApi(ctx) {
+  const routes = []
+  for (const { fn } of ctx.injectCalls) {
+    fn({
+      effect: (fn2) => fn2(),
+      webServer: { register: (r) => { routes.push(r); return () => {} } },
+    })
+  }
+  return routes
+}
+
+function mockReq(method, body) {
+  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
+  return {
+    method,
+    async *[Symbol.asyncIterator]() {
+      for (const c of chunks) yield c
+    },
+  }
+}
+
+function mockRes() {
+  const res = {
+    code: 0,
+    headers: null,
+    body: null,
+    writeHead(code, headers) {
+      res.code = code
+      res.headers = headers
+    },
+    end(raw) {
+      res.body = JSON.parse(raw)
+    },
+  }
+  return res
+}
+
+test('config api: two exact routes registered via the webServer inject', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const routes = mountWebApi(ctx)
+  assert.deepEqual(
+    routes.map((r) => r.path),
+    ['/plugin/review-gate/config', '/plugin/review-gate/config/reset'],
+  )
+  assert.ok(routes.every((r) => r.kind === 'exact'))
+})
+
+test('config api: GET reads config; POST applies patch live and persists overlay', async () => {
+  const { apply, readOverlay } = await import('../lib/index.js')
+  const receiptDir = join(_tmpdir(), 'rg-api-' + process.pid)
+  try {
+    const ctx = fakeCtx()
+    apply(ctx, { ...baseConfig, receiptDir })
+    const api = mountWebApi(ctx).find((r) => r.path === '/plugin/review-gate/config')
+    const got = mockRes()
+    await api.handler(mockReq('GET'), got)
+    assert.equal(got.code, 200)
+    assert.equal(got.body.config.mode, 'auto')
+
+    const posted = mockRes()
+    await api.handler(mockReq('POST', { mode: 'full', bogus: 1 }), posted)
+    assert.equal(posted.code, 200)
+    assert.equal(posted.body.ok, true)
+    assert.deepEqual(posted.body.ignored, ['bogus'], 'unknown keys reported, not fatal')
+
+    const reread = mockRes()
+    await api.handler(mockReq('GET'), reread)
+    assert.equal(reread.body.config.mode, 'full', 'mutation is live for subsequent reads')
+    assert.deepEqual(readOverlay(receiptDir), { mode: 'full' }, 'overlay persisted')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('config api: POST with an invalid value -> 400 and config untouched', async () => {
+  const { apply } = await import('../lib/index.js')
+  const receiptDir = join(_tmpdir(), 'rg-api-bad-' + process.pid)
+  try {
+    const ctx = fakeCtx()
+    apply(ctx, { ...baseConfig, receiptDir })
+    const api = mountWebApi(ctx).find((r) => r.path === '/plugin/review-gate/config')
+    const bad = mockRes()
+    await api.handler(mockReq('POST', { mode: 'nonsense' }), bad)
+    assert.equal(bad.code, 400)
+    assert.ok(bad.body.error, 'error message present')
+    const got = mockRes()
+    await api.handler(mockReq('GET'), got)
+    assert.equal(got.body.config.mode, 'auto', 'invalid patch left no trace')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('config api: reset restores boot values and clears the overlay', async () => {
+  const { apply, readOverlay } = await import('../lib/index.js')
+  const receiptDir = join(_tmpdir(), 'rg-api-reset-' + process.pid)
+  try {
+    const ctx = fakeCtx()
+    apply(ctx, { ...baseConfig, receiptDir })
+    const routes = mountWebApi(ctx)
+    const api = routes.find((r) => r.path === '/plugin/review-gate/config')
+    const reset = routes.find((r) => r.path === '/plugin/review-gate/config/reset')
+    await api.handler(mockReq('POST', { mode: 'full', fullAtFiles: 9 }), mockRes())
+    const done = mockRes()
+    await reset.handler(mockReq('POST'), done)
+    assert.equal(done.code, 200)
+    assert.equal(done.body.config.mode, 'auto', 'boot values restored')
+    assert.equal(done.body.config.fullAtFiles, 3, 'boot threshold restored')
+    assert.deepEqual(readOverlay(receiptDir), {}, 'overlay cleared on disk')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('config api: malformed body -> 400; wrong method -> 405', async () => {
+  const { apply } = await import('../lib/index.js')
+  const receiptDir = join(_tmpdir(), 'rg-api-40x-' + process.pid)
+  try {
+    const ctx = fakeCtx()
+    apply(ctx, { ...baseConfig, receiptDir })
+    const api = mountWebApi(ctx).find((r) => r.path === '/plugin/review-gate/config')
+    const raw = { method: 'POST', async *[Symbol.asyncIterator]() { yield Buffer.from('{not json') } }
+    const bad = mockRes()
+    await api.handler(raw, bad)
+    assert.equal(bad.code, 400, 'invalid JSON -> 400')
+    const del = mockRes()
+    await api.handler(mockReq('DELETE'), del)
+    assert.equal(del.code, 405, 'method whitelist -> 405')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+// ---- review_gate_config tool (the agent-facing twin of the HTTP API) ----
+
+function getConfigTool(ctx) {
+  return ctx.registered.find((t) => t.name === 'review_gate_config')
+}
+
+test('review_gate_config: get / set / reset round-trip with live effect', async () => {
+  const { apply, decideReview, readOverlay } = await import('../lib/index.js')
+  const receiptDir = join(_tmpdir(), 'rg-tool-' + process.pid)
+  try {
+    const ctx = fakeCtx()
+    apply(ctx, { ...baseConfig, receiptDir })
+    const tool = getConfigTool(ctx)
+    assert.ok(tool, 'review_gate_config registered')
+
+    const got = JSON.parse(await tool.execute({ action: 'get' }))
+    assert.equal(got.config.mode, 'auto')
+
+    const setOut = await tool.execute({ action: 'set', mode: 'full', maxChain: 3 })
+    assert.ok(String(setOut).includes('已生效'), 'set reports success')
+    assert.ok(String(setOut).includes('"full"'), 'set echoes the applied value')
+    // Live semantics: the state machine grades through the mutated config.
+    assert.equal(
+      decideReview({ writeFiles: 1, chain: 0, config: { ...baseConfig, mode: 'full' } }),
+      'full',
+      'full mode grades full regardless of size',
+    )
+    assert.deepEqual(readOverlay(receiptDir), { mode: 'full', maxChain: 3 }, 'overlay persisted')
+
+    // Invalid enum values are rejected upstream by defineTool's schema.
+    await assert.rejects(
+      () => tool.execute({ action: 'set', mode: 'bogus' }),
+      /must be one of/,
+      'enum violations throw at the tool boundary',
+    )
+    // Out-of-range numbers pass the tool schema but fail the Config parse
+    // (fullAtFiles has min 1) — this is the live-config validation layer.
+    const bad = await tool.execute({ action: 'set', fullAtFiles: 0 })
+    assert.ok(String(bad).includes('校验失败'), 'range violation rejected with a message')
+    const stillFull = JSON.parse(await tool.execute({ action: 'get' }))
+    assert.equal(stillFull.config.mode, 'full', 'rejected patch left no trace')
+
+    const resetOut = await tool.execute({ action: 'reset' })
+    assert.ok(String(resetOut).includes('恢复'), 'reset reports success')
+    const after = JSON.parse(await tool.execute({ action: 'get' }))
+    assert.equal(after.config.mode, 'auto', 'boot mode restored')
+    assert.equal(after.config.maxChain, 2, 'boot maxChain restored')
+    assert.deepEqual(after.overlay, {}, 'overlay cleared')
+    assert.deepEqual(readOverlay(receiptDir), {}, 'overlay cleared on disk')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('review_gate_config: set with no keys lists available keys, writeTools excluded', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, baseConfig)
+  const tool = getConfigTool(ctx)
+  const out = String(await tool.execute({ action: 'set' }))
+  assert.ok(out.includes('未提供任何可设键'), 'empty set hints at available keys')
+  assert.equal(out.includes('writeTools'), false, 'advanced internal knob stays off the tool face')
 })

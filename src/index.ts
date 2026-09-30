@@ -16,6 +16,7 @@
  */
 import type { ContextFormed, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import { existsSync, readFileSync } from 'node:fs'
@@ -30,9 +31,11 @@ import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { BASH_WRITE_RE, clearTurnWrites, collectDiff, createState, decideReview, handleTurnStopping, trackWrite } from './state.js'
 import type { GateState, ReviewGateConfig } from './state.js'
 import { reviewInstructionText } from './instruction.js'
+import { OVERLAY_KEYS, applyOverlay, pickOverlay, readOverlay, saveOverlay } from './config-live.js'
 
 export * from './instruction.js'
 export * from './state.js'
+export * from './config-live.js'
 
 /**
  * Declare the plugin's own user-message source kind. The client renders any
@@ -93,8 +96,30 @@ export async function appendReceipt(dir: string, receipt: Record<string, unknown
 export function apply(ctx: Context, config: ReviewGateConfig): void {
   const states = new Map<string, GateState>()
 
+  // Live-config overlay (the web panel's source of truth): boot values are the
+  // schema defaults plus whatever the bundle patch layer set; the overlay
+  // persisted by the panel merges on top in place. Every consumer already
+  // reads `config.x` per event, so in-place mutation is instantly live with
+  // zero read-site changes. The snapshot powers POST validation and reset.
+  // Deliberately NOT annotated as ReviewGateConfig: its arrays must stay
+  // mutable for the schemastery validation call below (readonly arrays fail
+  // the schema's input type).
+  const bootConfig = {
+    ...config,
+    writeTools: [...(config.writeTools ?? [])],
+    ignoreGlobs: [...(config.ignoreGlobs ?? [])],
+    alwaysFullGlobs: [...(config.alwaysFullGlobs ?? [])],
+  }
+  // The overlay lives under the effective receipt dir: receiptDir is a
+  // boot-level key (excluded from the overlay), so the path is stable for the
+  // process lifetime, and tests isolate via their baseConfig receiptDir.
+  const overlayDir = config.receiptDir ?? RECEIPT_DIR
+  const overlay: Record<string, unknown> = readOverlay(overlayDir)
+  applyOverlay(config, overlay)
+
   // Distilled pitfalls ride full review instructions. Read once at activation;
-  // the file is edited between sessions, not mid-turn.
+  // the file is edited between sessions, not mid-turn. (Must stay AFTER the
+  // overlay merge so an overlay-provided pitfallsFile is honored at boot.)
   let pitfallsText: string | undefined
   try {
     if (config.pitfallsFile && existsSync(config.pitfallsFile)) {
@@ -274,6 +299,99 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
     )
   }, 'review-gate listeners')
 
+  // ---- Live-config HTTP API (the web panel's backend) --------------------
+  // webServer only exists in web compositions, so mount lazily via a nested
+  // inject: in headless profiles the child fiber simply stays pending and the
+  // gate works untouched (a top-level inject would pin the whole plugin to
+  // web-only). Consumption is shape-guarded — we deliberately avoid adding a
+  // dsh-host-webserver dependency for one registration call (same defense
+  // style as the steer guard below).
+  const respondJson = (res: ServerResponse, code: number, body: unknown): void => {
+    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(body))
+  }
+
+  // Full-schema parse of the candidate config: invalid values (bad enum, NaN,
+  // out-of-range) throw; valid ones parse clean. Always validated against
+  // boot values + current overlay + the incoming patch, so a patch can never
+  // leave the config in a state it could not have booted into.
+  const validatePatch = (picked: Record<string, unknown>): void => {
+    Config({ ...bootConfig, ...overlay, ...picked })
+  }
+
+  const handleConfigApi = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (req.method === 'GET') {
+        return respondJson(res, 200, { config: { ...config }, overlay: { ...overlay } })
+      }
+      if (req.method !== 'POST') {
+        return respondJson(res, 405, { error: 'method not allowed' })
+      }
+      let raw = ''
+      for await (const chunk of req) raw += String(chunk)
+      let patch: unknown
+      try {
+        patch = JSON.parse(raw || '{}')
+      } catch {
+        return respondJson(res, 400, { error: 'invalid JSON body' })
+      }
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return respondJson(res, 400, { error: 'JSON object body required' })
+      }
+      const picked = pickOverlay(patch as Record<string, unknown>)
+      const ignored = Object.keys(patch as Record<string, unknown>).filter((k) => !(k in picked))
+      try {
+        validatePatch(picked)
+      } catch (error) {
+        return respondJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+      Object.assign(overlay, picked)
+      applyOverlay(config, picked)
+      await saveOverlay(overlayDir, overlay)
+      respondJson(res, 200, { ok: true, config: { ...config }, overlay: { ...overlay }, ignored })
+    } catch (error) {
+      respondJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  const handleConfigReset = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (req.method !== 'POST') {
+        return respondJson(res, 405, { error: 'method not allowed' })
+      }
+      for (const key of Object.keys(overlay)) delete overlay[key]
+      Object.assign(config, bootConfig)
+      await saveOverlay(overlayDir, overlay)
+      respondJson(res, 200, { ok: true, config: { ...config } })
+    } catch (error) {
+      respondJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  ctx.inject(['webServer'], (webCtx: Context) => {
+    const webServer = (
+      webCtx as unknown as {
+        webServer?: { register: (route: { kind: string; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }) => () => void }
+      }
+    ).webServer
+    if (!webServer || typeof webServer.register !== 'function') return
+    webCtx.effect(() =>
+      webServer.register({
+        kind: 'exact',
+        path: '/plugin/review-gate/config',
+        // Return the promise so the caller (webserver/tests) can await it.
+        handler: (req, res) => handleConfigApi(req, res),
+      }),
+    )
+    webCtx.effect(() =>
+      webServer.register({
+        kind: 'exact',
+        path: '/plugin/review-gate/config/reset',
+        handler: (req, res) => handleConfigReset(req, res),
+      }),
+    )
+  })
+
   // The receipt tool: the model calls it after finishing the review demanded by
   // the runtime-context instruction. Registration reads the injectable `tools`
   // service property, which is only available while apply() itself runs —
@@ -375,6 +493,90 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         clearTurnWrites(state)
         state.chain = 0
         return `复审回执已登记（${a.action}，${a.files.length} 文件，findings ${(a.findings ?? []).length} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
+      },
+    }),
+  )
+
+  // The live-config tool: the agent-facing twin of the panel's HTTP API.
+  // Shares the exact same validation + persistence chain (boot snapshot +
+  // overlay + full-schema parse), so chat ("把审查调到 full") and the panel
+  // can never drift apart. Registered at apply() top level like
+  // review_acknowledge — inside the effect generator it throws without inject.
+  ctx.tools.register(
+    defineTool({
+      name: 'review_gate_config',
+      description:
+        '查看或调整审查闸门力度（即时生效，无需重启）。action=get 读当前配置；set 按提供的键部分更新（仅列出的键有效，未知键忽略）；reset 清除全部面板覆盖、恢复启动时配置。',
+      parameters: {
+        action: {
+          type: 'string',
+          required: true,
+          enum: ['get', 'set', 'reset'],
+          description: '操作类型',
+        },
+        mode: {
+          type: 'string',
+          enum: ['off', 'micro', 'full', 'auto'],
+          description: 'set 时可选：复审模式（off 关闸 / micro 快扫 / auto 自动分档 / full 全面）',
+        },
+        fullAtFiles: { type: 'number', description: 'set 时可选：文件数达到该值升格全面复审' },
+        fullAtLines: { type: 'number', description: 'set 时可选：diff 行数达到该值升格全面复审' },
+        milestoneAtFiles: { type: 'number', description: 'set 时可选：会话漂移文件数升格阈值' },
+        maxChain: { type: 'number', description: 'set 时可选：连续拦截止损上限' },
+        noNewReviewsBeforeDemotion: { type: 'number', description: 'set 时可选：连续零发现降格疲劳阈值' },
+        alwaysFullGlobs: { type: 'array', description: 'set 时可选：命中即强制全面复审的 glob 清单' },
+        ignoreGlobs: { type: 'array', description: 'set 时可选：豁免复审触发的 glob 清单' },
+      },
+      output: {
+        schema: { type: 'json' },
+        render: (_args, value) => [{ type: 'text', text: String(value) }],
+      },
+      async execute(args) {
+        const a = args as {
+          action: 'get' | 'set' | 'reset'
+          mode?: 'off' | 'micro' | 'full' | 'auto'
+          fullAtFiles?: number
+          fullAtLines?: number
+          milestoneAtFiles?: number
+          maxChain?: number
+          noNewReviewsBeforeDemotion?: number
+          alwaysFullGlobs?: string[]
+          ignoreGlobs?: string[]
+        }
+        if (a.action === 'get') {
+          return JSON.stringify({ config: { ...config }, overlay: { ...overlay } })
+        }
+        if (a.action === 'reset') {
+          for (const key of Object.keys(overlay)) delete overlay[key]
+          Object.assign(config, bootConfig)
+          await saveOverlay(overlayDir, overlay)
+          return '审查闸门已恢复启动时配置（全部面板覆盖已清除，即时生效）。'
+        }
+        const patch: Record<string, unknown> = {}
+        // The tool exposes every overlay key except writeTools (an advanced
+        // internal knob; the HTTP PATCH face still accepts it).
+        for (const key of OVERLAY_KEYS) {
+          if (key === 'writeTools') continue
+          if (a[key as Exclude<(typeof OVERLAY_KEYS)[number], 'writeTools'>] !== undefined) {
+            patch[key] = a[key as Exclude<(typeof OVERLAY_KEYS)[number], 'writeTools'>]
+          }
+        }
+        if (Object.keys(patch).length === 0) {
+          return 'set 未提供任何可设键；可用键：' + OVERLAY_KEYS.filter((k) => k !== 'writeTools').join(', ')
+        }
+        try {
+          validatePatch(pickOverlay(patch))
+        } catch (error) {
+          return '校验失败，未生效：' + (error instanceof Error ? error.message : String(error))
+        }
+        const picked = pickOverlay(patch)
+        Object.assign(overlay, picked)
+        applyOverlay(config, picked)
+        await saveOverlay(overlayDir, overlay)
+        const applied = Object.keys(picked)
+          .map((k) => `${k}=${JSON.stringify(picked[k])}`)
+          .join('，')
+        return `审查闸门配置已生效（即时）：${applied}`
       },
     }),
   )

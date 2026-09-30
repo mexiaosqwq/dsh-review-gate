@@ -20,6 +20,7 @@ import z from '@deepseek-ai/schemastery';
 import type { ReviewGateConfig } from './state.js';
 export * from './instruction.js';
 export * from './state.js';
+export * from './config-live.js';
 /**
  * Declare the plugin's own user-message source kind. The client renders any
  * user message whose source kind is not 'user' as a collapsed context node

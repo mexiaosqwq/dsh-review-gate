@@ -86,7 +86,17 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 
 ### 配置
 
-开箱即用（`auto` 分档），无需任何配置。要改键：在 **profile 层 patch**（`~/.dsh/profiles/<profile>/cordis.patch.yml`）追加一段针对 `id: review-gate` 的覆盖行：
+开箱即用（`auto` 分档），无需任何配置。改键有两条路，按生效时机选：
+
+**运行时调整（即时生效，无需重启）**——力度的日常调节走这里：
+
+- **网页面板**（规划中）：会话输入框区的审查状态 chip，点击弹窗直接切档——client 半区是下一里程碑
+- **对话**：让 agent 调 `review_gate_config` 工具——「把审查调到 full」「复审力度调轻一点」「恢复默认」，get/set/reset 即时生效
+- **HTTP**（面板后端，也可 curl）：`GET /plugin/review-gate/config` 读；`POST` 同路径提交部分键即改（未知键忽略并在响应 `ignored` 列出）；`POST /plugin/review-gate/config/reset` 恢复启动时配置
+
+运行时可调键 = `mode / fullAtFiles / fullAtLines / milestoneAtFiles / maxChain / noNewReviewsBeforeDemotion / alwaysFullGlobs / ignoreGlobs`（HTTP 面额外收 `writeTools`）。改动持久化到 `receiptDir` 下的 `config.json` 覆盖层，重启后依然生效。
+
+**启动级（改文件 + 重启 profile）**——只用于路径键（`pitfallsFile` / `receiptDir`，运行时面刻意不收它们）或想把默认值写进组合文件：在 **profile 层 patch**（`~/.dsh/profiles/<profile>/cordis.patch.yml`）追加一段针对 `id: review-gate` 的覆盖行：
 
 ```yaml
 - id: review-gate
@@ -101,7 +111,7 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 - 带 `id` 且无 `insert` 的行 = 覆盖既有层；`config` 是**整段替换**，不做深合并（本插件 bundle 层的 config 为空 `{}`，所以追加即可，无需复述别的字段）
 - 不想持久化就用启动时临时挂载：`dsh --profile web --patch <文件>`
 
-改完重启 profile 生效。全部键与默认值见下节配置表（schema 权威：`dsh --profile web --dump-config-schema`）。
+启动序：schema 默认 → bundle patch → **存储覆盖层**（面板/工具改动最后落地、优先级最高）。全部键与默认值见下节配置表（schema 权威：`dsh --profile web --dump-config-schema`）。
 
 ### 更新
 
