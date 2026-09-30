@@ -7,6 +7,7 @@
 - **UI 优先**：面板即产品，改文件降级为初始配置。入口 = 输入框区常驻状态 chip（对齐工作区权限开关交互），点击弹窗直接切档。
 - **硬约束**：宿主无 patch 热重载（`patchReload: "startup"`）——插件**自持活配置**，patch 只管初始值；面板改动持久化到插件自己的存储覆盖层，即时生效、零重启。
 - **两里程碑**：M1 = 最小四档（off/micro/auto/full）chip + 弹窗切换；M2 = 阈值与路径清单也进弹窗。
+- **M2 已落码（2026-09-30，用户扩围拍板三项全做）**：5 阈值数字表单 + 2 glob 清单编辑 + writeTools 高级折叠区 + 实时仪表盘（host GET 扩展 `states`/`receipts`/`?sessionId=`→`effective`）；glob `?` 三入口同守卫（面板输入/API POST/工具 set——globToRegExp 对 `?` 静默错译）。commit ed57dab/cf54aaf + 守卫 commit；表单纯手写（schema-form 证伪，见下表）；待真机验收（host 半区需重启一次）。
 
 ## 平台取证（已实证）
 
