@@ -101,7 +101,8 @@ try {
   await writeFile(stagingPath, wrapped)
   const { smokeClient } = await import('./client-smoke.mjs')
   smokeClient(wrapped)
-  await rm(outputPath, { force: true })
+  // POSIX rename atomically replaces the target — no rm first (a gap between
+  // rm and rename would briefly leave lib/client.js missing to a restart).
   await rename(stagingPath, outputPath)
   console.log(`client bundle: ${outputPath} (${order.length} module${order.length === 1 ? '' : 's'}, smoke-gated)`)
 } catch (error) {
