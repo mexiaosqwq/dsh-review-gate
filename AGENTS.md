@@ -51,7 +51,7 @@ dsh plugin --profile web add ~/dsh-review-gate               # 安装/更新到 
 dsh --profile web --dump-config          # 验证挂载：应出现 id: review-gate 层
 ```
 
-验证顺序：改 src → build → gate + realloop 全绿 → 提交（**含 lib/**）→ 重启目标 profile → 真机验收（receipts.jsonl 留痕）。提交信息用 conventional commits（feat/fix/test/docs/refactor，git log 实况）。
+验证顺序：改 src → build → gate + realloop 全绿 → 提交（**含 lib/**）→ 真机验收（receipts.jsonl 留痕）；**client 半区改动（src/client/）刷新/热更即看，host 半区（index/state/instruction/config-live）改动才需重启 profile**。提交信息用 conventional commits（feat/fix/test/docs/refactor，git log 实况）。
 
 ## Architecture
 
@@ -80,7 +80,7 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 
 ## Pitfalls
 
-- **宿主不重读磁盘**：插件 bundle 加载后改 lib/ 不生效，必须重启目标 profile；`npm run build` 不触碰运行中宿主（曾因 16 小时旧 bundle 引发拦截-重发循环，误导排查）。
+- **宿主不重读磁盘（只限 host 半区）**：`lib/index.js`（事件/工具/HTTP/配置语义）boot 时载入进程，改后必须重启目标 profile；`npm run build` 不触碰运行中宿主（曾因 16 小时旧 bundle 引发拦截-重发循环，误导排查）。**client 半区（`lib/client.js`）不需要重启**：宿主按 rev 内容寻址下发、GUI client-plugin HMR receiver 接管，rebuild 后热更/刷新即达（2026-09-30 真机实证：chip 图标改动未重启自动生效）。
 - **测试测的是 lib/ 不是 src/**：改 src 后忘 build → 旧码全绿假象。green ≠ 测过新码。
 - **真时序测试配方**（test/realloop.test.mjs 注释即文档）：驱动真回合 = `agent.inbox.append` + `agent.wakeDriver()`，**不调 harness.claim**（claim 把回合抢给调用者 → 空步零模型调用）；`harness.create` 第二参 `{provider, model}` 必给；gate 插件必须先于 `mountAgentLoopTestHarness` 挂载（load-order-sensitive）；teardown 走 `ctx.fiber.dispose()`（cordis Context 无 dispose 方法）。
 - **waterfall 事件上挂诊断监听器必须 `return next()` 透明**（跨上下文再加 `{global: true}`）——不透明监听器 = veto 整链，会砍死同链其他插件（veto 语义 realloop 双向实证）。
