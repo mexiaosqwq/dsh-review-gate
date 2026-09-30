@@ -42,7 +42,7 @@
 
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
-npm run build                            # tsc → lib/；改 src 后必跑
+npm run build                            # tsc → sanity(lib 可导入) → tsc client → smoke 闸门 → 原子发布 lib/；改 src 后必跑
 npm test                                 # gate 80 例 + client-bundle smoke 2 例；先 build 再 test，否则测旧码
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
@@ -89,6 +89,7 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 - bash 直写不进 FileSystem service，事件层不可见，只有命令模式启发式部分覆盖（有误报/漏报，只武装不阻断）——补覆盖改 BASH_WRITE_RE，别幻想事件能兜住它。
 - **借外部脚本必须读到尾再抄**：scripts/build-client.mjs 的 bootstrap 行 = `__modules["index.js"](__localRequire, module, module.exports); return module.exports;`——入口裸名（非 `./` 开头）会落平台 require 查表；嵌套模块工厂收到的 require 必须是 `__localRequire`（相对路径才能递归内联）。2026-09-30 真机 boot 全灭判例：抄截断模板手写 bootstrap + 「验证」只是拿产物对拍自己的假设（循环验证），build 绿 ≠ 能跑。
 - **client bundle 坏 = GUI 整体拒载**（"1 entry did not activate"，用户进不去网页），不是"少个 chip"——生成代码必须有执行级检查（client-bundle smoke 已入 npm test 常跑链），panel 类改动 ship 前必真机。
+- **lib/ 即线上（symlink 安装），中间态改动会直接生效**——防线已结构化：build 链自带双闸门（host lib 导入自检 + client smoke，staging 不过 = lib 保持上一个好产物，实测拒绝路径），坏产物到不了 lib/；提交只应在完整检查点做。
 
 ## Maintenance
 

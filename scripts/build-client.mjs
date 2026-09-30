@@ -4,7 +4,7 @@
 // (react, the slots service, ...) stay as require() calls and are resolved by
 // the host's browser module table.
 // (Recipe adopted from dsh-web-mobile's out-of-tree client build; id adapted.)
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -90,7 +90,22 @@ const wrapped = [
   '} });',
 ].join('\n')
 
+// Publish behind the smoke gate: write to staging, execute the bytes under a
+// host-faithful loader facade, and only swap into lib/ on green. lib/ IS the
+// live install (symlink), so an unverified intermediate build must never land
+// there — the 2026-09-30 boot-kill shipped exactly that way.
 await rm(buildDir, { recursive: true, force: true })
 await mkdir(dirname(outputPath), { recursive: true })
-await writeFile(outputPath, wrapped)
-console.log(`client bundle: ${outputPath} (${order.length} module${order.length === 1 ? '' : 's'})`)
+const stagingPath = `${outputPath}.staging`
+try {
+  await writeFile(stagingPath, wrapped)
+  const { smokeClient } = await import('./client-smoke.mjs')
+  smokeClient(wrapped)
+  await rm(outputPath, { force: true })
+  await rename(stagingPath, outputPath)
+  console.log(`client bundle: ${outputPath} (${order.length} module${order.length === 1 ? '' : 's'}, smoke-gated)`)
+} catch (error) {
+  await rm(stagingPath, { force: true })
+  console.error(`client bundle REJECTED at the smoke gate — lib/client.js kept at the last good build: ${error.message}`)
+  process.exit(1)
+}

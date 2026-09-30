@@ -35,7 +35,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.json && node scripts/sanity-lib.mjs && node node_modules/typescript/bin/tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "test": "node --test test/gate.test.mjs test/client-bundle.test.mjs"
   },
   "peerDependencies": {
