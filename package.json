@@ -1,7 +1,7 @@
 {
   "name": "dsh-review-gate",
   "description": "Automatic post-turn code review gate: after a turn that wrote files, steer the agent back for a graded self-review (light scan or full audit) before the turn closes.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
