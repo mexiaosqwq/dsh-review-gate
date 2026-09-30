@@ -37,6 +37,8 @@ export interface ReviewGateConfig {
   readonly receiptDir?: string
   /** After this many consecutive full reviews with zero new findings, milestone drift no longer escalates to full (converged-session fatigue guard; default 3). */
   readonly noNewReviewsBeforeDemotion?: number
+  /** auto mode only: a single-file turn whose diff has fewer changed lines than this owes no review at all (0 disables; default 10). */
+  readonly exemptBelowLines?: number
 }
 
 export type ReviewAction = 'skip' | 'micro' | 'full'
@@ -75,6 +77,44 @@ export function decideReview(input: {
     config.alwaysFullGlobs.some((g) => globToRegExp(g).test(p)),
   )
   return writeFiles >= config.fullAtFiles || drifted || core ? 'full' : 'micro'
+}
+
+// Count changed lines in a unified diff: every + or - line except the +++/---
+// file headers. Shared by the assemble escalation and the trivial-write waiver.
+export function countChangedLines(diffText: string): number {
+  return diffText
+    .split('\n')
+    .filter(
+      (l) =>
+        (l.startsWith('+') && !l.startsWith('+++')) ||
+        (l.startsWith('-') && !l.startsWith('---')),
+    ).length
+}
+
+// Trivial-write waiver (2026-09-30 user-approved): in `auto` mode, exactly one
+// tracked file with a genuinely tiny diff owes no review at all. Evaluated at
+// the assemble evidence probe, which already measured the diff — zero extra
+// subprocess cost. Fixed modes stay literal (the user chose them deliberately);
+// a missing diff measurement (non-git) or a bash write-pattern hit (untracked
+// blind spot) never waives — 宁多触发不漏触发.
+export function shouldWaive(input: {
+  mode: ReviewMode
+  action: ReviewAction
+  /** Tracked files snapshotted at arm time (bash-only arms have none). */
+  fileCount: number
+  bashWrites: boolean
+  /** Changed (+/-) diff lines; null = no measurement available. */
+  changedLines: number | null
+  /** Waiver threshold; 0/undefined disables the waiver entirely. */
+  exemptBelowLines?: number
+}): boolean {
+  const threshold = input.exemptBelowLines ?? 0
+  if (threshold <= 0) return false
+  if (input.mode !== 'auto') return false
+  if (input.action !== 'micro') return false
+  if (input.fileCount !== 1) return false
+  if (input.bashWrites) return false
+  return input.changedLines !== null && input.changedLines < threshold
 }
 
 // Minimal glob to RegExp for ignoreGlobs: double-star spans directories (and

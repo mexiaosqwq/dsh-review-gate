@@ -20,6 +20,8 @@ export interface ReviewGateConfig {
     readonly receiptDir?: string;
     /** After this many consecutive full reviews with zero new findings, milestone drift no longer escalates to full (converged-session fatigue guard; default 3). */
     readonly noNewReviewsBeforeDemotion?: number;
+    /** auto mode only: a single-file turn whose diff has fewer changed lines than this owes no review at all (0 disables; default 10). */
+    readonly exemptBelowLines?: number;
 }
 export type ReviewAction = 'skip' | 'micro' | 'full';
 export declare function decideReview(input: {
@@ -35,6 +37,18 @@ export declare function decideReview(input: {
     chain: number;
     config: Pick<ReviewGateConfig, 'mode' | 'fullAtFiles' | 'milestoneAtFiles' | 'maxChain' | 'alwaysFullGlobs' | 'noNewReviewsBeforeDemotion'>;
 }): ReviewAction;
+export declare function countChangedLines(diffText: string): number;
+export declare function shouldWaive(input: {
+    mode: ReviewMode;
+    action: ReviewAction;
+    /** Tracked files snapshotted at arm time (bash-only arms have none). */
+    fileCount: number;
+    bashWrites: boolean;
+    /** Changed (+/-) diff lines; null = no measurement available. */
+    changedLines: number | null;
+    /** Waiver threshold; 0/undefined disables the waiver entirely. */
+    exemptBelowLines?: number;
+}): boolean;
 export declare function globToRegExp(glob: string): RegExp;
 export declare function isIgnored(path: string, globs: readonly string[]): boolean;
 export declare const BASH_WRITE_RE: RegExp;

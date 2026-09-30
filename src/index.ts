@@ -28,7 +28,17 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
-import { BASH_WRITE_RE, clearTurnWrites, collectDiff, createState, decideReview, handleTurnStopping, trackWrite } from './state.js'
+import {
+  BASH_WRITE_RE,
+  clearTurnWrites,
+  collectDiff,
+  countChangedLines,
+  createState,
+  decideReview,
+  handleTurnStopping,
+  shouldWaive,
+  trackWrite,
+} from './state.js'
 import type { GateState, ReviewGateConfig } from './state.js'
 import { BRACE_VARIABLES, braceGuard, reviewInstructionText } from './instruction.js'
 import { OVERLAY_KEYS, applyOverlay, pickOverlay, readOverlay, saveOverlay } from './config-live.js'
@@ -53,6 +63,7 @@ export const Config = z.object({
   mode: z.union(['off', 'micro', 'full', 'auto']).default('auto'),
   fullAtFiles: z.number().min(1).default(3),
   fullAtLines: z.number().min(1).default(150),
+  exemptBelowLines: z.number().min(0).default(10),
   milestoneAtFiles: z.number().min(1).default(10),
   maxChain: z.number().min(1).default(2),
   writeTools: z.array(z.string()).default(['write', 'edit']),
@@ -306,29 +317,49 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           if (p.diffText === undefined) {
             p.diffText = (await collectDiff(p.paths)) ?? ''
           }
-          // Line-count escalation: a small file count can still be a big diff.
-          if (p.diffText && p.action === 'micro') {
-            const changed = p.diffText
-              .split('\n')
-              .filter(
-                (l) =>
-                  (l.startsWith('+') && !l.startsWith('+++')) ||
-                  (l.startsWith('-') && !l.startsWith('---')),
-              ).length
-            if (changed >= cfgOf(context.agent?.id).fullAtLines) p.action = 'full'
+          const cfg = cfgOf(context.agent?.id)
+          const changed = p.diffText ? countChangedLines(p.diffText) : null
+          // Trivial-write waiver (2026-09-30 user-approved proposal): in auto
+          // mode a single tracked file with a tiny diff owes no review at all.
+          // The probe above is the measurement — no extra git call. A waived
+          // turn logs an audit line (without `action`, so receipt stats keep
+          // counting real reviews only) and the closing turn settles as skip.
+          if (
+            changed !== null &&
+            shouldWaive({
+              mode: cfg.mode,
+              action: p.action,
+              fileCount: p.paths.length,
+              bashWrites: state.bashWrites,
+              changedLines: changed,
+              exemptBelowLines: cfg.exemptBelowLines,
+            })
+          ) {
+            state.pendingReview = null
+            void appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
+              agentId: context.agent?.id,
+              outcome: 'waived',
+              files: p.paths,
+              changedLines: changed,
+            })
+          } else {
+            // Line-count escalation: a small file count can still be a big diff.
+            if (changed !== null && p.action === 'micro' && changed >= cfg.fullAtLines) {
+              p.action = 'full'
+            }
+            const diffSection = p.diffText
+              ? `\n\n### 本回合改动 diff（HEAD 起）\n\`\`\`diff\n${p.diffText}\n\`\`\``
+              : '\n\n（非 git 环境：请对照你本回合的编辑记录复审）'
+            const bashSection =
+              state.bashCommands.length > 0
+                ? '\n\n### bash 疑似写入命令（进程直写不进上面的 diff，请自行核对这些命令改了什么）\n' +
+                  state.bashCommands.map((c) => `- \`${c}\``).join('\n')
+                : ''
+            out.contexts.push({
+              name: 'review-gate',
+              text: braceGuard(reviewInstructionText(p.action, p.files, pitfallsText, config.pitfallsFile) + diffSection + bashSection),
+            })
           }
-          const diffSection = p.diffText
-            ? `\n\n### 本回合改动 diff（HEAD 起）\n\`\`\`diff\n${p.diffText}\n\`\`\``
-            : '\n\n（非 git 环境：请对照你本回合的编辑记录复审）'
-          const bashSection =
-            state.bashCommands.length > 0
-              ? '\n\n### bash 疑似写入命令（进程直写不进上面的 diff，请自行核对这些命令改了什么）\n' +
-                state.bashCommands.map((c) => `- \`${c}\``).join('\n')
-              : ''
-          out.contexts.push({
-            name: 'review-gate',
-            text: braceGuard(reviewInstructionText(p.action, p.files, pitfallsText, config.pitfallsFile) + diffSection + bashSection),
-          })
         }
         return out
       },
@@ -717,6 +748,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         },
         fullAtFiles: { type: 'number', description: 'set 时可选：文件数达到该值升格全面复审' },
         fullAtLines: { type: 'number', description: 'set 时可选：diff 行数达到该值升格全面复审' },
+        exemptBelowLines: { type: 'number', description: 'set 时可选：auto 档单文件 diff 改动行数低于该值则整回合免复审（0=关闭）' },
         milestoneAtFiles: { type: 'number', description: 'set 时可选：会话漂移文件数升格阈值' },
         maxChain: { type: 'number', description: 'set 时可选：连续拦截止损上限' },
         noNewReviewsBeforeDemotion: { type: 'number', description: 'set 时可选：连续零发现降格疲劳阈值' },
@@ -734,6 +766,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           mode?: 'off' | 'micro' | 'full' | 'auto'
           fullAtFiles?: number
           fullAtLines?: number
+          exemptBelowLines?: number
           milestoneAtFiles?: number
           maxChain?: number
           noNewReviewsBeforeDemotion?: number

@@ -19,6 +19,7 @@ export const OVERLAY_KEYS = [
   'mode',
   'fullAtFiles',
   'fullAtLines',
+  'exemptBelowLines',
   'milestoneAtFiles',
   'maxChain',
   'writeTools',

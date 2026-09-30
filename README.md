@@ -94,7 +94,7 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 - **对话**：让 agent 调 `review_gate_config` 工具——「把审查调到 full」「复审力度调轻一点」「恢复默认」，get/set/reset 即时生效
 - **HTTP**（面板后端，也可 curl）：`GET /plugin/review-gate/config` 读（`?sessionId=` 附带返回该会话生效完整配置 `effective`、活会话计数 `states`、今日回执统计 `receipts`）；`POST` 同路径提交部分键即改（未知键忽略并在响应 `ignored` 列出；glob 键含 `?` 直接 400——`globToRegExp` 对 `?` 静默错译，三入口同守卫）；`POST /plugin/review-gate/config/reset` 恢复启动时配置
 
-运行时可调键 = `mode / fullAtFiles / fullAtLines / milestoneAtFiles / maxChain / noNewReviewsBeforeDemotion / alwaysFullGlobs / ignoreGlobs`（HTTP 面额外收 `writeTools`）。改动持久化到 `receiptDir` 下的 `config.json` 覆盖层，重启后依然生效。
+运行时可调键 = `mode / fullAtFiles / fullAtLines / exemptBelowLines / milestoneAtFiles / maxChain / noNewReviewsBeforeDemotion / alwaysFullGlobs / ignoreGlobs`（HTTP 面额外收 `writeTools`）。改动持久化到 `receiptDir` 下的 `config.json` 覆盖层，重启后依然生效。
 
 **启动级（改文件 + 重启 profile）**——只用于路径键（`pitfallsFile` / `receiptDir`，运行时面刻意不收它们）或想把默认值写进组合文件：在 **profile 层 patch**（`~/.dsh/profiles/<profile>/cordis.patch.yml`）追加一段针对 `id: review-gate` 的覆盖行：
 
@@ -137,6 +137,7 @@ dsh plugin --profile web remove dsh-review-gate
 | `mode` | `auto` | `off` 关闭 / `micro` 固定快扫 / `full` 固定全面 / `auto` 按改动体量分档 |
 | `fullAtFiles` | `3` | `auto` 模式下，改动文件数达到该值走全面复审 |
 | `fullAtLines` | `150` | diff 增删行数达到该值，快扫升格全面（行数在取证时懒判定） |
+| `exemptBelowLines` | `10` | `auto` 模式下，单文件回合的 diff 改动行数低于该值则**整回合免复审**（豁免落 `outcome:waived` 审计行；`0` 关闭；固定 micro/full 档不受影响；bash 写命中或多文件回合不豁免） |
 | `milestoneAtFiles` | `10` | `auto` 模式下，会话累计改动文件数达到该值视为漂移，升格全面复审（受 `noNewReviewsBeforeDemotion` 疲劳守卫钳制） |
 | `maxChain` | `2` | 连续未 ack 的拦截上限（止损） |
 | `writeTools` | `["write","edit"]` | 视为代码写入的工具名 |

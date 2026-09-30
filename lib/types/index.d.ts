@@ -38,6 +38,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     mode: z<"micro" | "full" | "off" | "auto", "micro" | "full" | "off" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
     fullAtLines: z<number, number, "defined">;
+    exemptBelowLines: z<number, number, "defined">;
     milestoneAtFiles: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;
@@ -50,6 +51,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     mode: z<"micro" | "full" | "off" | "auto", "micro" | "full" | "off" | "auto", "defined">;
     fullAtFiles: z<number, number, "defined">;
     fullAtLines: z<number, number, "defined">;
+    exemptBelowLines: z<number, number, "defined">;
     milestoneAtFiles: z<number, number, "defined">;
     maxChain: z<number, number, "defined">;
     writeTools: z<string[], string[], "defined">;

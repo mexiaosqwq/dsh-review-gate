@@ -1350,3 +1350,90 @@ test('config api: GET receipt stats count today only, last line surfaced', async
     await fs.rm(receiptDir, { recursive: true, force: true })
   }
 })
+
+// ---- trivial-write waiver (2026-09-30 user-approved proposal ③) ----
+
+test('shouldWaive: pure-function contract', async () => {
+  const { shouldWaive } = await import('../lib/index.js')
+  const base = { mode: 'auto', action: 'micro', fileCount: 1, bashWrites: false, changedLines: 3, exemptBelowLines: 10 }
+  assert.equal(shouldWaive(base), true, 'tiny single-file auto change waives')
+  assert.equal(shouldWaive({ ...base, changedLines: 10 }), false, 'at-threshold does NOT waive (strict <)')
+  assert.equal(shouldWaive({ ...base, changedLines: 0 }), true, 'zero-line diff (binary-ish) waives')
+  assert.equal(shouldWaive({ ...base, changedLines: null }), false, 'no diff measurement never waives (non-git)')
+  assert.equal(shouldWaive({ ...base, mode: 'micro' }), false, 'fixed micro stays literal')
+  assert.equal(shouldWaive({ ...base, mode: 'full' }), false, 'fixed full stays literal')
+  assert.equal(shouldWaive({ ...base, action: 'full' }), false, 'already-full arms (drift/core) never waive')
+  assert.equal(shouldWaive({ ...base, fileCount: 2 }), false, 'multi-file turns owe a review')
+  assert.equal(shouldWaive({ ...base, bashWrites: true }), false, 'bash write-pattern hit blocks the waiver')
+  assert.equal(shouldWaive({ ...base, exemptBelowLines: 0 }), false, '0 disables')
+  assert.equal(shouldWaive({ ...base, exemptBelowLines: undefined }), false, 'missing key disables (old boot configs unaffected)')
+})
+
+test('countChangedLines: counts +/- lines, skips +++/--- headers', async () => {
+  const { countChangedLines } = await import('../lib/index.js')
+  const diff = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n context\n'
+  assert.equal(countChangedLines(diff), 2)
+})
+
+test('assemble: auto + single tiny file waives the review (no section, waived receipt, no steer)', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const dir = await mkdtempGitRepo() // a.txt carries exactly 1 changed line vs HEAD
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-waive-'))
+  try {
+    apply(ctx, { ...baseConfig, exemptBelowLines: 10, receiptDir })
+    const steered = []
+    const agent = { id: 'waive', steer: (m) => steered.push(m) }
+    ctx.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent })
+    const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+    const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+    const out = await listener(assembly, { agent }, async () => assembly)
+    assert.equal(out.contexts.find((c) => c.name === 'review-gate'), undefined, 'tiny single-file change owes no review section')
+    ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+    assert.equal(steered.length, 0, 'waived turn closes without steering')
+    // void appendReceipt is fire-and-forget — settle the fs chain before
+    // reading (same 25ms pattern as the stop-loss receipt tests above).
+    await new Promise((r) => setTimeout(r, 25))
+    const receipt = JSON.parse(await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8'))
+    assert.equal(receipt.outcome, 'waived', 'waiver is auditable, not silent')
+    assert.equal(receipt.changedLines, 1)
+    assert.equal(receipt.action, undefined, 'no action key — receipt stats must not count waivers as reviews')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('assemble: waiver does not fire past the threshold, on multi-file turns, or in fixed micro', async () => {
+  const { apply } = await import('../lib/index.js')
+  const dir = await mkdtempGitRepo()
+  await writeFile(join(dir, 'a.txt'), 'base\n1\n2\n3\n') // 3 changed lines
+  const mk = () => ({ contexts: [], sections: [], tools: [], variables: {} })
+
+  // above the waiver threshold -> reviewed
+  const ctxA = fakeCtx()
+  apply(ctxA, { ...baseConfig, exemptBelowLines: 2 })
+  const agentA = { id: 'big', steer: () => {} }
+  ctxA.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent: agentA })
+  const asmA = mk()
+  const outA = await ctxA.listeners.get('system-prompt/assemble')[0](asmA, { agent: agentA }, () => Promise.resolve(asmA))
+  assert.ok(outA.contexts.find((c) => c.name === 'review-gate'), '3 changed lines vs threshold 2 -> reviewed')
+
+  // two tiny files in one turn -> reviewed
+  const ctxB = fakeCtx()
+  apply(ctxB, { ...baseConfig, exemptBelowLines: 10 })
+  const agentB = { id: 'two', steer: () => {} }
+  ctxB.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent: agentB })
+  ctxB.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.tsx') }, agent: agentB })
+  const asmB = mk()
+  const outB = await ctxB.listeners.get('system-prompt/assemble')[0](asmB, { agent: agentB }, () => Promise.resolve(asmB))
+  assert.ok(outB.contexts.find((c) => c.name === 'review-gate'), 'two files -> reviewed even when the diff is tiny')
+
+  // fixed micro mode never waives
+  const ctxC = fakeCtx()
+  apply(ctxC, { ...baseConfig, mode: 'micro', exemptBelowLines: 10 })
+  const agentC = { id: 'fixed', steer: () => {} }
+  ctxC.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent: agentC })
+  const asmC = mk()
+  const outC = await ctxC.listeners.get('system-prompt/assemble')[0](asmC, { agent: agentC }, () => Promise.resolve(asmC))
+  assert.ok(outC.contexts.find((c) => c.name === 'review-gate'), 'fixed micro reviews even a 1-line change')
+})
