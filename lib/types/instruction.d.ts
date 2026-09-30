@@ -1,4 +1,8 @@
 import type { UserMessage } from '@deepseek-ai/dsh-llm';
+export declare const BRACE_VARIABLES: {
+    readonly rg_braces: "{{";
+};
+export declare function braceGuard(text: string): string;
 export declare const MICRO_TEXT: (files: number) => string;
 export declare const FULL_TEXT: (files: number) => string;
 export declare function reviewInstructionText(action: 'micro' | 'full', files: number, pitfallsText?: string, pitfallsSource?: string): string;

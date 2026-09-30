@@ -1,47 +1,84 @@
 /**
- * The composer intensity chip: shows the live review mode, opens a popup to
- * switch it. Mobile-first (the author's panel lives on a phone): bottom-sheet
- * fixed panel, ≥32px tap targets, no portal — a `position: fixed` child
- * escapes the composer layout without leaving the host React tree.
+ * The composer intensity chip: shows the session's live review mode, opens a
+ * popup to switch it.
  *
- * Theme note (M1 ceiling): the panel uses a neutral dark overlay that reads
- * well on both GUI themes; theme-token integration is deferred until a token
- * map is needed beyond this one surface (upgrade path: dsh-client-ui-theme).
+ * 2026-09-30 redesign (user verdict on v1: "忒丑了"): the panel now speaks the
+ * host's design language — `--dsw-*` alias tokens (light/dark theme aware,
+ * same fills the host's own menus use), glass backdrop blur, a segmented
+ * control instead of four bare boxes, and a compact scope toggle (本会话 vs
+ * 全局默认). Writes go to the plugin's HTTP config API on the same origin:
+ * session scope carries the slot's `sessionId` so two conversations never
+ * bleed into each other (in-memory on the host, by design — agent ids do not
+ * survive a boot); global scope persists to the overlay file.
+ *
+ * No portal: a `position: fixed` child escapes the composer layout without
+ * leaving the host React tree. One plugin-owned <style> tag carries the
+ * keyframes + hover rules (deduped by id, mirroring the official CSS injector
+ * pattern — the hand-rolled build has no CSS pipeline).
  */
 import { useEffect, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 
-/** Props the slot renderer binds; M1 consumes none of the runtime hooks. */
+/** Props the slot renderer binds; `sessionId` comes from ui-session's merge. */
 export type ReviewGateChipProps = PropsRuntime<'conversation.input.left'>
 
 type Mode = 'off' | 'micro' | 'auto' | 'full'
+type Scope = 'session' | 'global'
 
 const MODES: readonly Mode[] = ['off', 'micro', 'auto', 'full']
 const MODE_LABEL: Record<Mode, string> = { off: '关闭', micro: '快扫', auto: '自动', full: '全面' }
 const API = '/plugin/review-gate/config'
 const RESET = '/plugin/review-gate/config/reset'
 
-/** Read the live mode from the config API; any failure degrades to null. */
-async function readMode(): Promise<Mode | null> {
-  try {
-    const res = await fetch(API, { cache: 'no-store' })
-    if (!res.ok) return null
-    const body = (await res.json()) as { config?: { mode?: unknown } }
-    const mode = body.config?.mode
-    return typeof mode === 'string' && (MODES as readonly string[]).includes(mode) ? (mode as Mode) : null
-  } catch {
-    return null
-  }
-}
+/** Keyframes + hover rules; injected once per page (id-deduped). */
+const PANEL_CSS = `
+@keyframes rgc-fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes rgc-pop { from { opacity: 0; transform: translateY(10px) scale(.98) } to { opacity: 1; transform: translateY(0) scale(1) } }
+[data-review-gate="chip"]:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)) !important; }
+[data-review-gate="mode-btn"]:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)) !important; }
+[data-review-gate="scope-btn"]:hover:not([data-active="1"]) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)) !important; }
+[data-review-gate="ghost"]:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)) !important; }
+[data-review-gate="icon-btn"]:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)) !important; }
+`
 
-/** Chip + popup. All writes POST to the M0 HTTP API and re-read the result. */
-export function ReviewGateChip(_props: ReviewGateChipProps) {
+/** Chip + popup. All writes POST to the HTTP API; session scope carries the id. */
+export function ReviewGateChip(props: ReviewGateChipProps) {
+  const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
   const [mode, setMode] = useState<Mode | null>(null)
+  const [scope, setScope] = useState<Scope>('session')
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState('')
 
+  /** Pull the effective mode for the current scope from the API. */
+  const refresh = async (forScope: Scope): Promise<void> => {
+    try {
+      const res = await fetch(API, { cache: 'no-store' })
+      if (!res.ok) return
+      const body = (await res.json()) as {
+        config?: { mode?: unknown }
+        sessions?: Record<string, unknown>
+      }
+      const asMode = (v: unknown): Mode | null =>
+        typeof v === 'string' && (MODES as readonly string[]).includes(v) ? (v as Mode) : null
+      const global = asMode(body.config?.mode)
+      const own = sessionId !== undefined ? asMode(body.sessions?.[sessionId]) : null
+      setMode(forScope === 'session' ? (own ?? global) : global)
+    } catch {
+      /* keep the previous label; the chip degrades, never throws */
+    }
+  }
+
   useEffect(() => {
-    void readMode().then(setMode)
+    // One style tag per page; skip if a previous seat already injected it.
+    if (typeof document !== 'undefined' && document.getElementById('review-gate-panel-css') === null) {
+      const tag = document.createElement('style')
+      tag.id = 'review-gate-panel-css'
+      tag.textContent = PANEL_CSS
+      document.head.appendChild(tag)
+    }
+    void refresh('session')
+    // Mount-only: the label refreshes on demand (open/scope switch).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const applyMode = async (next: Mode): Promise<void> => {
@@ -50,14 +87,16 @@ export function ReviewGateChip(_props: ReviewGateChipProps) {
       const res = await fetch(API, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: next }),
+        body: JSON.stringify(
+          scope === 'session' ? { mode: next, scope, sessionId } : { mode: next },
+        ),
       })
       if (!res.ok) {
         setStatus(`调整失败（HTTP ${String(res.status)}）`)
         return
       }
       setMode(next)
-      setStatus(`已生效：${MODE_LABEL[next]}`)
+      setStatus(scope === 'session' ? `已生效（本会话）：${MODE_LABEL[next]}` : `已生效（全局默认）：${MODE_LABEL[next]}`)
     } catch {
       setStatus('调整失败（网络异常）')
     }
@@ -66,13 +105,17 @@ export function ReviewGateChip(_props: ReviewGateChipProps) {
   const resetAll = async (): Promise<void> => {
     setStatus('…')
     try {
-      const res = await fetch(RESET, { method: 'POST' })
+      const res = await fetch(RESET, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(scope === 'session' ? { scope, sessionId } : {}),
+      })
       if (!res.ok) {
         setStatus(`恢复失败（HTTP ${String(res.status)}）`)
         return
       }
-      setMode(await readMode())
-      setStatus('已恢复启动时配置')
+      setStatus(scope === 'session' ? '已恢复全局默认（本会话）' : '已恢复启动时配置（全局）')
+      void refresh(scope)
     } catch {
       setStatus('恢复失败（网络异常）')
     }
@@ -87,30 +130,35 @@ export function ReviewGateChip(_props: ReviewGateChipProps) {
         data-review-gate="chip"
         title="审查闸门力度（点击调整）"
         aria-label="审查闸门力度（点击调整）"
-        onClick={() => { setOpen((v) => !v); setStatus('') }}
+        onClick={() => { setOpen((v) => !v); setStatus(''); void refresh(scope) }}
         style={{
-          border: '1px solid rgba(128,128,128,0.45)',
-          borderRadius: 999,
-          padding: '2px 10px',
+          border: 'none',
+          borderRadius: 8,
+          padding: '4px 10px',
           minHeight: 28,
           fontSize: 12,
           lineHeight: '20px',
           background: 'transparent',
-          color: 'inherit',
+          color: 'var(--dsw-alias-label-secondary, currentColor)',
           cursor: 'pointer',
           whiteSpace: 'nowrap',
-          opacity: mode === 'off' ? 0.55 : 1,
+          fontWeight: 500,
+          opacity: mode === 'off' ? 0.5 : 1,
         }}
       >
         {chipLabel}
       </button>
       {open && (
         <>
-          {/* Outside tap closes the popup; the backdrop sits just under it. */}
+          {/* Dimmed outside-tap catcher, just under the panel. */}
           <div
             data-review-gate="backdrop"
             onClick={() => { setOpen(false); setStatus('') }}
-            style={{ position: 'fixed', inset: 0, zIndex: 9990, background: 'transparent' }}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 9990,
+              background: 'rgba(0,0,0,0.28)',
+              animation: 'rgc-fade 140ms ease-out',
+            }}
           />
           <div
             data-review-gate="panel"
@@ -120,83 +168,140 @@ export function ReviewGateChip(_props: ReviewGateChipProps) {
               position: 'fixed',
               left: 12,
               right: 12,
-              bottom: 76,
+              maxWidth: 440,
+              margin: '0 auto',
+              bottom: 84,
               zIndex: 9991,
-              borderRadius: 12,
-              border: '1px solid rgba(255,255,255,0.14)',
-              background: 'rgba(28,28,32,0.98)',
-              color: '#e8e8ea',
-              padding: '10px 12px 12px',
-              boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
+              borderRadius: 16,
+              border: '1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))',
+              background: 'var(--dsw-menu-surface-fill, rgba(250,250,252,0.92))',
+              backdropFilter: 'blur(28px) saturate(1.5)',
+              WebkitBackdropFilter: 'blur(28px) saturate(1.5)',
+              color: 'var(--dsw-alias-label-primary, #1f2329)',
+              padding: '12px 14px 12px',
+              boxShadow: '0 16px 48px rgba(0,0,0,0.16), 0 2px 10px rgba(0,0,0,0.08)',
               fontFamily: 'inherit',
+              animation: 'rgc-pop 170ms cubic-bezier(0.2, 0.9, 0.3, 1)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
               <span style={{ fontSize: 13, fontWeight: 600 }}>审查闸门力度</span>
               <button
                 type="button"
                 aria-label="关闭"
+                data-review-gate="icon-btn"
                 onClick={() => { setOpen(false); setStatus('') }}
-                style={{ border: 'none', background: 'transparent', color: '#aaa', fontSize: 16, lineHeight: 1, cursor: 'pointer', padding: 4 }}
+                style={{
+                  border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-tertiary, #888)',
+                  fontSize: 16, lineHeight: 1, cursor: 'pointer', padding: 6, borderRadius: 8,
+                }}
               >
                 ×
               </button>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
+
+            {/* Scope toggle: the knob this popup writes to. */}
+            <div style={{
+              display: 'flex', gap: 3, padding: 3, borderRadius: 10,
+              background: 'var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.08))',
+              marginBottom: 8,
+            }}>
+              {(['session', 'global'] as const).map((s) => {
+                const active = s === scope
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    data-review-gate="scope-btn"
+                    data-active={active ? '1' : '0'}
+                    onClick={() => { setScope(s); setStatus(''); void refresh(s) }}
+                    style={{
+                      flex: 1, minHeight: 28, borderRadius: 8, border: 'none', fontSize: 12,
+                      cursor: 'pointer', fontWeight: active ? 600 : 400,
+                      background: active ? 'var(--dsw-menu-surface-fill, #fff)' : 'transparent',
+                      color: active
+                        ? 'var(--dsw-alias-label-primary, #1f2329)'
+                        : 'var(--dsw-alias-label-secondary, #5a6070)',
+                      boxShadow: active ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                      transition: 'background 120ms ease',
+                    }}
+                  >
+                    {s === 'session' ? '本会话' : '全局默认'}
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Mode segmented control. */}
+            <div style={{
+              display: 'flex', gap: 3, padding: 3, borderRadius: 12,
+              background: 'var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.08))',
+            }}>
               {MODES.map((m) => {
                 const active = m === mode
                 return (
                   <button
                     key={m}
                     type="button"
-                    data-review-gate={`mode-${m}`}
-                    disabled={m === mode}
+                    data-review-gate="mode-btn"
+                    disabled={active}
                     onClick={() => { void applyMode(m) }}
                     style={{
                       flex: 1,
-                      minHeight: 36,
-                      borderRadius: 8,
-                      border: active ? '1px solid rgba(120,160,255,0.9)' : '1px solid rgba(255,255,255,0.16)',
-                      background: active ? 'rgba(90,130,255,0.28)' : 'rgba(255,255,255,0.06)',
-                      color: '#e8e8ea',
+                      minHeight: 46,
+                      borderRadius: 9,
+                      border: 'none',
+                      background: active ? 'var(--dsw-menu-surface-fill, #fff)' : 'transparent',
+                      color: active
+                        ? 'var(--dsw-alias-label-primary, #1f2329)'
+                        : 'var(--dsw-alias-label-secondary, #5a6070)',
                       fontSize: 13,
+                      fontWeight: active ? 600 : 400,
                       cursor: active ? 'default' : 'pointer',
+                      boxShadow: active ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                      transition: 'background 120ms ease',
+                      opacity: m === 'off' && !active ? 0.7 : 1,
                     }}
                   >
                     {MODE_LABEL[m]}
-                    <div style={{ fontSize: 10, opacity: 0.65, marginTop: 1 }}>{m}</div>
+                    <div style={{ fontSize: 10, opacity: 0.6, marginTop: 1 }}>{m}</div>
                   </button>
                 )
               })}
             </div>
+
             <div
               data-review-gate="status"
               style={{
                 marginTop: 8,
                 minHeight: 16,
                 fontSize: 12,
-                color: status.startsWith('调整失败') || status.startsWith('恢复失败') ? '#ff9a9a' : '#9fd6a0',
+                color:
+                  status.startsWith('调整失败') || status.startsWith('恢复失败')
+                    ? 'var(--dsw-alias-state-danger, #d5494a)'
+                    : 'var(--dsw-alias-state-success-primary, #3d9a50)',
               }}
             >
               {status}
             </div>
+
             <button
               type="button"
-              data-review-gate="reset"
+              data-review-gate="ghost"
               onClick={() => { void resetAll() }}
               style={{
-                marginTop: 2,
-                minHeight: 32,
+                marginTop: 4,
+                minHeight: 36,
                 width: '100%',
-                borderRadius: 8,
-                border: '1px solid rgba(255,255,255,0.16)',
-                background: 'rgba(255,255,255,0.06)',
-                color: '#cfcfd4',
+                borderRadius: 10,
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--dsw-alias-label-secondary, #5a6070)',
                 fontSize: 12,
                 cursor: 'pointer',
               }}
             >
-              恢复启动时配置
+              {scope === 'session' ? '恢复全局默认（本会话）' : '恢复启动时配置（全局）'}
             </button>
           </div>
         </>

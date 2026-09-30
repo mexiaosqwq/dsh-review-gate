@@ -6,6 +6,23 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 
+// The host renders every runtime context through dsh-system-prompt's
+// interpolator (renderContextSections), which treats a `{{` … `}}` pair as a
+// prompt-variable reference and THROWS the whole assembly on a name that does
+// not match /^[a-z][a-z0-9_]*$/ — and contexts have no `interpolate: false`
+// escape (only sections do). Diff/pitfalls evidence is attacker-ish text: any
+// JSX `style={{ … }}` or templating snippet would kill the reviewing turn.
+// Escape hatch from the interpolator's own semantics: substituted values are
+// never rescanned, so rewriting every `{{` into a reference to this gate-owned
+// variable (value `{{`) renders back the exact original bytes and can never
+// throw. The group consumes exactly the two braces the guard wrote, so the
+// value must restore both. Applied to every context the gate pushes.
+export const BRACE_VARIABLES = { rg_braces: '{{' } as const
+
+export function braceGuard(text: string): string {
+  return text.replaceAll('{{', '{{rg_braces}}')
+}
+
 export const MICRO_TEXT = (files: number) =>
   `[review-gate] 本回合已改动 ${files} 个文件。收尾流程：完成所有工作后、给出最终总结之前，先执行 L1 快扫（只读排查）——逐行读本次全部 diff，专查复制粘贴改漏、改名后残留旧引用、条件写反、边界漏判；汇报时先列出改动文件清单（从 diff 读出）。发现问题→立即修复。复审完成后调用 review_acknowledge 工具回执（提交 findings 与结论），最终总结必须并入复审结论。`
 

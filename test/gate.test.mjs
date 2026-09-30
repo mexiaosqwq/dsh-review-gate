@@ -551,6 +551,7 @@ async function mkdtempGitRepo() {
   await runGit('git', ['-C', dir, 'config', 'user.email', 't@t'])
   await runGit('git', ['-C', dir, 'config', 'user.name', 't'])
   await writeFile(join(dir, 'a.txt'), 'base\n')
+  await writeFile(join(dir, 'a.tsx'), 'base\n')
   await runGit('git', ['-C', dir, 'add', '.'])
   await runGit('git', ['-C', dir, 'commit', '-m', 'base'])
   await writeFile(join(dir, 'a.txt'), 'base\nnew line\n')
@@ -566,6 +567,34 @@ test('collectDiff: git repo returns a diff, non-git dir returns null', async () 
   const plain = await mkdtemp(join(_tmpdir(), 'rg-plain-'))
   await writeFile(join(plain, 'x.txt'), 'x')
   assert.equal(await collectDiff([join(plain, 'x.txt')]), null, 'non-git dir -> null')
+})
+
+test('assemble: diff containing {{...}} (JSX style) must not kill the turn', async () => {
+  // Real-world killer (2026-09-30): a chip restyle diff carried JSX
+  // `style={{ ... }}`; the host interpolator (dsh-system-prompt
+  // renderContextSections) runs over EVERY runtime context with no
+  // interpolate:false escape, saw `{{` + `}}`, and threw
+  // `malformed prompt variable reference … in context "review-gate"` —
+  // agent-loop preStep died and the whole reviewing turn failed, repeatedly.
+  const { apply } = await import('../lib/index.js')
+  const { renderContextSections } = await import('@deepseek-ai/dsh-system-prompt')
+  const ctx = fakeCtx()
+  const dir = await mkdtempGitRepo()
+  await writeFile(join(dir, 'a.tsx'), 'base\nconst x = <div style={{ color: "red" }} />\n')
+  apply(ctx, { ...baseConfig, fullAtLines: 9999 })
+  const agent = { id: 'jsx', steer: () => {} }
+  ctx.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.tsx') }, agent })
+  const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+  const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+  const out = await listener(assembly, { agent }, async () => assembly)
+  const section = out.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(section, 'section injected')
+  assert.ok(section.text.includes('style={{'), 'diff evidence preserves the JSX braces verbatim')
+  // The decisive assertion: the host render path must NOT throw on this text.
+  const rendered = renderContextSections(out)
+  const renderedSection = rendered.find((c) => c.name === 'review-gate')
+  assert.ok(renderedSection, 'section survives host-side interpolation')
+  assert.ok(renderedSection.text.includes('style={{ color'), 'brace content renders back byte-identical')
 })
 
 test('assemble: review section carries the diff evidence and line count upgrades to full', async () => {

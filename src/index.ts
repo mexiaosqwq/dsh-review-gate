@@ -30,7 +30,7 @@ import type {} from '@deepseek-ai/dsh-fs'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { BASH_WRITE_RE, clearTurnWrites, collectDiff, createState, decideReview, handleTurnStopping, trackWrite } from './state.js'
 import type { GateState, ReviewGateConfig } from './state.js'
-import { reviewInstructionText } from './instruction.js'
+import { BRACE_VARIABLES, braceGuard, reviewInstructionText } from './instruction.js'
 import { OVERLAY_KEYS, applyOverlay, pickOverlay, readOverlay, saveOverlay } from './config-live.js'
 
 export * from './instruction.js'
@@ -117,6 +117,23 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
   const overlay: Record<string, unknown> = readOverlay(overlayDir)
   applyOverlay(config, overlay)
 
+  // Per-session config layering (2026-09-30 user requirement): intensity is a
+  // per-conversation knob. effective(agent) = boot ⊕ global overlay ⊕ session
+  // overlay. Session overlays live in memory only — agent ids do not survive
+  // a process boot, so persisting them would be dead data. Consumers already
+  // take a config per call, so passing cfgOf(agentId) keeps everything live.
+  const sessionOverlays = new Map<string, Record<string, unknown>>()
+  const sessionConfigs = new Map<string, ReviewGateConfig>()
+  const rebuildAgentConfig = (agentId: string): void => {
+    sessionConfigs.set(agentId, {
+      ...bootConfig,
+      ...overlay,
+      ...sessionOverlays.get(agentId),
+    } as ReviewGateConfig)
+  }
+  const cfgOf = (agentId: string | undefined): ReviewGateConfig =>
+    (agentId !== undefined ? sessionConfigs.get(agentId) : undefined) ?? config
+
   // Distilled pitfalls ride full review instructions. Read once at activation;
   // the file is edited between sessions, not mid-turn. (Must stay AFTER the
   // overlay merge so an overlay-provided pitfallsFile is honored at boot.)
@@ -132,7 +149,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
   // Grade immediately so the instruction leads the wrap-up: the model sees
   // "review before your final summary" while still working. Shared by both
   // signal sources (tools/result and fs intents).
-  const gradeAndArm = (state: GateState): void => {
+  const gradeAndArm = (state: GateState, cfg: ReviewGateConfig): void => {
     const action = decideReview({
       writeFiles: state.files.size,
       bashWrites: state.bashWrites,
@@ -140,7 +157,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       paths: [...state.files],
       noNewReviews: state.noNewReviews,
       chain: state.chain,
-      config,
+      config: cfg,
     })
     if (action === 'skip') {
       state.pendingReview = null
@@ -168,7 +185,8 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       // Single-signal era (v5-T3): the fs-intent lane is gone, no cross-shape
       // dedup needed — trackWrite fires directly (Set.add keeps repeat
       // emissions of the same file idempotent).
-      trackWrite(state.files, exec.name, exec.arguments, config)
+      const cfg = cfgOf(exec.agent.id)
+      trackWrite(state.files, exec.name, exec.arguments, cfg)
       // bash write-pattern heuristic: a redirected/moving/removing command very
       // likely wrote somewhere we cannot track — arm a review for it.
       if (exec.name === 'bash') {
@@ -181,7 +199,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       // Milestone drift: only a NEW path counts (the fs-intent listener may
       // have added it first — Set growth is the dedup gate).
       if (state.files.size > filesBefore) state.sessionFiles += 1
-      gradeAndArm(state)
+      gradeAndArm(state, cfg)
     })
 
     yield ctx.on(
@@ -194,11 +212,12 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         // nulls pendingReview, so the reviewed files list must be captured
         // first for the stop_loss audit line (v5-F1).
         const files = state.pendingReview?.paths ?? []
-        const action = handleTurnStopping(state, (message) => payload.agent.steer?.(message), config)
+        const cfg = cfgOf(payload.agent.id)
+        const action = handleTurnStopping(state, (message) => payload.agent.steer?.(message), cfg)
         // handleTurnStopping stays a pure function: IO lives here. 'skip' with
         // a chain at the cap means the review was given up on — log the
         // terminal state so the review-abandonment rate becomes observable.
-        if (action === 'skip' && state.chain >= config.maxChain) {
+        if (action === 'skip' && state.chain >= cfg.maxChain) {
           void appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
             agentId: payload.agent.id,
             outcome: 'stop_loss',
@@ -211,6 +230,8 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
 
     yield ctx.on('agent/disposed', (payload: { agent: { id: string } }) => {
       states.delete(payload.agent.id)
+      sessionOverlays.delete(payload.agent.id)
+      sessionConfigs.delete(payload.agent.id)
     })
 
     // A newly claimed user message starts a fresh user turn: decay the review
@@ -262,8 +283,20 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
             outcome: 'assemble_degraded',
           })
         }
+        // The gate-owned brace variable makes {{rg_braces}} resolvable for
+        // every context this listener pushes (see braceGuard).
         const out = await next()
+        out.variables = { ...out.variables, ...BRACE_VARIABLES }
         const state = context.agent?.id ? states.get(context.agent.id) : undefined
+        // Standing usage contract (2026-09-30 user requirement): a user message
+        // asking for a "review" (审查/复审/代码检查) must run THIS plugin's
+        // graded protocol at the session's default intensity and settle with a
+        // receipt — never a casual write-up. Two lines, always on.
+        out.contexts.push({
+          name: 'review-gate-usage',
+          text:
+            '当用户要求「审查/复审/代码检查/review」某次改动或某些文件时：按当前会话的复审档位执行本插件协议（review_gate_config action=get 可查档位；micro=五分区快扫，full=全面评审），结束后调用 review_acknowledge 结构化回执。缺省档位即会话默认，无需每次确认。',
+        })
         if (state?.pendingReview) {
           const p = state.pendingReview
           // Lazy evidence probe, once per armed review ('' = probed, nothing).
@@ -279,7 +312,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
                   (l.startsWith('+') && !l.startsWith('+++')) ||
                   (l.startsWith('-') && !l.startsWith('---')),
               ).length
-            if (changed >= config.fullAtLines) p.action = 'full'
+            if (changed >= cfgOf(context.agent?.id).fullAtLines) p.action = 'full'
           }
           const diffSection = p.diffText
             ? `\n\n### 本回合改动 diff（HEAD 起）\n\`\`\`diff\n${p.diffText}\n\`\`\``
@@ -291,7 +324,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
               : ''
           out.contexts.push({
             name: 'review-gate',
-            text: reviewInstructionText(p.action, p.files, pitfallsText, config.pitfallsFile) + diffSection + bashSection,
+            text: braceGuard(reviewInstructionText(p.action, p.files, pitfallsText, config.pitfallsFile) + diffSection + bashSection),
           })
         }
         return out
@@ -322,7 +355,10 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
   const handleConfigApi = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (req.method === 'GET') {
-        return respondJson(res, 200, { config: { ...config }, overlay: { ...overlay } })
+        const sessions = Object.fromEntries(
+          [...sessionConfigs.entries()].map(([aid, c]) => [aid, c.mode]),
+        )
+        return respondJson(res, 200, { config: { ...config }, overlay: { ...overlay }, sessions })
       }
       if (req.method !== 'POST') {
         return respondJson(res, 405, { error: 'method not allowed' })
@@ -338,17 +374,38 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
         return respondJson(res, 400, { error: 'JSON object body required' })
       }
-      const picked = pickOverlay(patch as Record<string, unknown>)
-      const ignored = Object.keys(patch as Record<string, unknown>).filter((k) => !(k in picked))
+      const body = patch as Record<string, unknown>
+      const scope = body.scope === 'session' ? 'session' : 'global'
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined
+      const picked = pickOverlay(body)
+      const ignored = Object.keys(body).filter((k) => !(k in picked) && k !== 'scope' && k !== 'sessionId')
       try {
-        validatePatch(picked)
+        if (scope === 'session') {
+          if (sessionId === undefined) {
+            return respondJson(res, 400, { error: 'scope=session requires a sessionId' })
+          }
+          Config({ ...bootConfig, ...overlay, ...sessionOverlays.get(sessionId), ...picked })
+        } else {
+          validatePatch(picked)
+        }
       } catch (error) {
         return respondJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
       }
+      if (scope === 'session') {
+        // Session overlays are in-memory only (agent ids never survive a boot).
+        sessionOverlays.set(sessionId!, { ...sessionOverlays.get(sessionId!), ...picked })
+        rebuildAgentConfig(sessionId!)
+        return respondJson(res, 200, {
+          ok: true,
+          scope,
+          config: { ...sessionConfigs.get(sessionId!) },
+        })
+      }
       Object.assign(overlay, picked)
       applyOverlay(config, picked)
+      for (const aid of [...sessionConfigs.keys()]) rebuildAgentConfig(aid)
       await saveOverlay(overlayDir, overlay)
-      respondJson(res, 200, { ok: true, config: { ...config }, overlay: { ...overlay }, ignored })
+      respondJson(res, 200, { ok: true, scope: 'global', config: { ...config }, overlay: { ...overlay }, ignored })
     } catch (error) {
       respondJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -359,10 +416,38 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       if (req.method !== 'POST') {
         return respondJson(res, 405, { error: 'method not allowed' })
       }
+      let scope: 'global' | 'session' = 'global'
+      let sessionId: string | undefined
+      try {
+        const raw = await new Promise<string>((resolve) => {
+          let body = ''
+          req.on('data', (c: unknown) => {
+            body += String(c)
+          })
+          req.on('end', () => resolve(body))
+        })
+        const parsed = JSON.parse(raw || '{}') as { scope?: unknown; sessionId?: unknown }
+        if (parsed.scope === 'session') scope = 'session'
+        if (typeof parsed.sessionId === 'string') sessionId = parsed.sessionId
+      } catch {
+        // Empty/unreadable body = plain global reset (back-compat).
+      }
+      if (scope === 'session') {
+        if (sessionId === undefined) {
+          return respondJson(res, 400, { error: 'scope=session requires a sessionId' })
+        }
+        sessionOverlays.delete(sessionId)
+        sessionConfigs.delete(sessionId)
+        return respondJson(res, 200, { ok: true, scope, config: { ...cfgOf(sessionId) } })
+      }
       for (const key of Object.keys(overlay)) delete overlay[key]
       Object.assign(config, bootConfig)
+      for (const aid of [...sessionOverlays.keys()]) {
+        sessionOverlays.delete(aid)
+        sessionConfigs.delete(aid)
+      }
       await saveOverlay(overlayDir, overlay)
-      respondJson(res, 200, { ok: true, config: { ...config } })
+      respondJson(res, 200, { ok: true, scope: 'global', config: { ...config } })
     } catch (error) {
       respondJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -458,7 +543,20 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           return '复审早已完成并回执（本消息为重发），状态已清理。请直接输出简短结案。'
         }
         if (!state.pendingReview) {
-          return '（当前无待复审回合，回执忽略）'
+          // On-request review settlement (2026-09-30): a user-asked review has
+          // no armed turn; still log the receipt (source: on_request) so the
+          // audit trail covers requested reviews, not just intercepted ones.
+          await appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
+            agentId,
+            outcome: 'acknowledged',
+            source: 'on_request',
+            action: a.action,
+            files: a.files,
+            findings: a.findings ?? [],
+            fixes_made: a.fixes_made,
+            summary: a.summary,
+          })
+          return `复审回执已登记（主动评审，${a.action}，${a.files.length} 文件，findings ${(a.findings ?? []).length} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
         }
         state.acknowledged = true
         // Convergence fatigue counter (v5-F1): a settled full review with zero
@@ -506,13 +604,18 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
     defineTool({
       name: 'review_gate_config',
       description:
-        '查看或调整审查闸门力度（即时生效，无需重启）。action=get 读当前配置；set 按提供的键部分更新（仅列出的键有效，未知键忽略）；reset 清除全部面板覆盖、恢复启动时配置。',
+        '查看或调整审查闸门力度（即时生效，无需重启）。scope 缺省=本会话（只影响当前会话的复审档位），scope=global 影响所有会话的默认值。action=get 读当前生效配置；set 按提供的键部分更新（仅列出的键有效，未知键忽略）；reset 清除作用域内的覆盖、恢复上级默认（global 时=启动时配置）。',
       parameters: {
         action: {
           type: 'string',
           required: true,
           enum: ['get', 'set', 'reset'],
           description: '操作类型',
+        },
+        scope: {
+          type: 'string',
+          enum: ['session', 'global'],
+          description: '可选：作用域，缺省 session=仅当前会话；global=全局默认',
         },
         mode: {
           type: 'string',
@@ -531,9 +634,10 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         schema: { type: 'json' },
         render: (_args, value) => [{ type: 'text', text: String(value) }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const a = args as {
           action: 'get' | 'set' | 'reset'
+          scope?: 'session' | 'global'
           mode?: 'off' | 'micro' | 'full' | 'auto'
           fullAtFiles?: number
           fullAtLines?: number
@@ -543,14 +647,37 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           alwaysFullGlobs?: string[]
           ignoreGlobs?: string[]
         }
+        const agentId = exec?.agent?.id
+        // Default scope: global — mirrors the HTTP API
+        // (body.scope === 'session' ? 'session' : 'global'). The session lane
+        // requires an explicit scope AND an agent id; the agent-less tool call
+        // (tests, headless) must keep mutating the global overlay.
+        const scope = a.scope === 'session' && agentId !== undefined ? 'session' : 'global'
         if (a.action === 'get') {
-          return JSON.stringify({ config: { ...config }, overlay: { ...overlay } })
+          if (scope === 'global') {
+            return JSON.stringify({ scope, config: { ...config }, overlay: { ...overlay } })
+          }
+          return JSON.stringify({
+            scope,
+            config: { ...cfgOf(agentId) },
+            overlay: (agentId !== undefined ? sessionOverlays.get(agentId) : undefined) ?? {},
+          })
         }
         if (a.action === 'reset') {
+          if (scope === 'session') {
+            if (agentId === undefined) return '校验失败，未生效：本会话缺少会话标识，无法按会话重置。'
+            sessionOverlays.delete(agentId)
+            sessionConfigs.delete(agentId)
+            return '本会话审查闸门已恢复全局默认（会话覆盖已清除，即时生效）。'
+          }
           for (const key of Object.keys(overlay)) delete overlay[key]
           Object.assign(config, bootConfig)
+          for (const aid of [...sessionOverlays.keys()]) {
+            sessionOverlays.delete(aid)
+            sessionConfigs.delete(aid)
+          }
           await saveOverlay(overlayDir, overlay)
-          return '审查闸门已恢复启动时配置（全部面板覆盖已清除，即时生效）。'
+          return '审查闸门已恢复启动时配置（全局与全部会话覆盖已清除，即时生效）。'
         }
         const patch: Record<string, unknown> = {}
         // The tool exposes every overlay key except writeTools (an advanced
@@ -570,13 +697,27 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           return '校验失败，未生效：' + (error instanceof Error ? error.message : String(error))
         }
         const picked = pickOverlay(patch)
-        Object.assign(overlay, picked)
-        applyOverlay(config, picked)
-        await saveOverlay(overlayDir, overlay)
         const applied = Object.keys(picked)
           .map((k) => `${k}=${JSON.stringify(picked[k])}`)
           .join('，')
-        return `审查闸门配置已生效（即时）：${applied}`
+        if (scope === 'session') {
+          if (agentId === undefined) return '校验失败，未生效：本会话缺少会话标识，无法按会话设置。'
+          const base = sessionOverlays.get(agentId) ?? {}
+          // Validate the full would-be session stack: boot ⊕ global ⊕ session.
+          try {
+            Config({ ...bootConfig, ...overlay, ...base, ...picked })
+          } catch (error) {
+            return '校验失败，未生效：' + (error instanceof Error ? error.message : String(error))
+          }
+          sessionOverlays.set(agentId, { ...base, ...picked })
+          rebuildAgentConfig(agentId)
+          return `本会话审查闸门已生效（即时，不影响其他会话）：${applied}`
+        }
+        Object.assign(overlay, picked)
+        applyOverlay(config, picked)
+        for (const aid of [...sessionConfigs.keys()]) rebuildAgentConfig(aid)
+        await saveOverlay(overlayDir, overlay)
+        return `审查闸门全局默认已生效（即时）：${applied}`
       },
     }),
   )
