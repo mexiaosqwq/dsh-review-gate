@@ -81,10 +81,12 @@ const wrapped = [
   '  if (cached !== undefined) return cached.exports;',
   '  var module = { exports: {} };',
   '  __cache[id] = module;',
-  '  __modules[id](require, module, module.exports);',
+  '  __modules[id](__localRequire, module, module.exports);',
   '  return module.exports;',
   '}',
-  'return __localRequire("index.js");',
+  'var module = { exports: {} };',
+  '__modules["index.js"](__localRequire, module, module.exports);',
+  'return module.exports;',
   '} });',
 ].join('\n')
 

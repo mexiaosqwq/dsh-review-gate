@@ -17,6 +17,7 @@
 │  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
 ├─ test/
 │  ├─ gate.test.mjs      80 例单元（import ../lib/index.js —— 不 build 就测旧码）
+│  ├─ client-bundle.test.mjs  2 例执行级 smoke：vm 跑 lib/client.js 字节（fake require 漏表即 throw）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
 ├─ lib/               tsc 产物，已入库（package main 指向 lib/，fresh clone 即可用；改 src 后重新 build 并一并提交）
 ├─ docs/
@@ -42,7 +43,7 @@
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
 npm run build                            # tsc → lib/；改 src 后必跑
-npm test                                 # gate 单元 80 例；import lib/ —— 先 build 再 test，否则测旧码
+npm test                                 # gate 80 例 + client-bundle smoke 2 例；先 build 再 test，否则测旧码
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
 dsh plugin --profile web add ~/dsh-review-gate               # 安装/更新到 profile
@@ -86,6 +87,8 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 - **globToRegExp 不支持 `?` 通配**（与 globstar 量词冲突，曾有真 bug）——需要时写显式模式。
 - **`node --test test/`（目录参数）在本机 node 24 报 MODULE_NOT_FOUND**——目录被当 CJS 模块加载；必须传文件路径。
 - bash 直写不进 FileSystem service，事件层不可见，只有命令模式启发式部分覆盖（有误报/漏报，只武装不阻断）——补覆盖改 BASH_WRITE_RE，别幻想事件能兜住它。
+- **借外部脚本必须读到尾再抄**：scripts/build-client.mjs 的 bootstrap 行 = `__modules["index.js"](__localRequire, module, module.exports); return module.exports;`——入口裸名（非 `./` 开头）会落平台 require 查表；嵌套模块工厂收到的 require 必须是 `__localRequire`（相对路径才能递归内联）。2026-09-30 真机 boot 全灭判例：抄截断模板手写 bootstrap + 「验证」只是拿产物对拍自己的假设（循环验证），build 绿 ≠ 能跑。
+- **client bundle 坏 = GUI 整体拒载**（"1 entry did not activate"，用户进不去网页），不是"少个 chip"——生成代码必须有执行级检查（client-bundle smoke 已入 npm test 常跑链），panel 类改动 ship 前必真机。
 
 ## Maintenance
 

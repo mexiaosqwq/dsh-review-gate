@@ -36,7 +36,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
-    "test": "node --test test/gate.test.mjs"
+    "test": "node --test test/gate.test.mjs test/client-bundle.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
