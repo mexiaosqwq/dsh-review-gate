@@ -163,7 +163,7 @@ dsh plugin --profile web remove dsh-review-gate
 
 - **Slot 所有权**：本插件与 dsh-fs-observation-policy 消费同类文件系统信号，但两者不同 slot、互不竞争。policy 挂在 base 层先激活，其 fs-intent 监听器不调 `next()` 即终裁整链（waterfall first-registrant 语义，realloop veto 测试双向实证）——v5-T3 之前 review-gate 的 fs-intent 监听器从未被调用过（死车道），现已整体清除。**结论：review-gate 不依赖 fs-intent 车道，无 slot 竞争敏感面。**
 - **tools/result 兜底为何充分**：写跟踪信号面 = `tools/result`（按 `writeTools` 清单识别）+ bash 写模式启发式（partial，见上方边界）。fs-intent 本可覆盖「走 FileSystem service 但工具名不在 writeTools 的未来工具」，但该能力在宿主上从未生效（上述死车道），删除无行为回退——单信号时代 Set.add 幂等性天然防同文件重复计数。
-- **重启契约**：宿主加载插件 bundle 后不重读磁盘——更新插件代码后必须重启目标 profile 才生效。`npm run build` 只更新 `lib/`，不触碰运行中的宿主。（实测教训：修复提交后 16 小时旧 bundle 仍在跑，造成拦截-重发循环复发与排查误导。）
+- **重启契约（两半区不对称）**：宿主半区（`lib/index.js`——事件/工具/HTTP/配置语义）boot 时载入进程，改后必须重启目标 profile；`npm run build` 不触碰运行中宿主（实测教训：修复提交后 16 小时旧 bundle 仍在跑，造成拦截-重发循环复发与排查误导）。**client 半区（`lib/client.js`）不需要重启**：宿主按 rev 内容寻址下发、GUI client-plugin HMR receiver 接管，rebuild 后刷新/热更即达（2026-09-30 真机实证：chip 图标改动未重启自动生效）。
 
 ## 开发
 
