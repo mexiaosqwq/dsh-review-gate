@@ -175,8 +175,8 @@ export interface GateState {
     files: number
     /** Absolute paths snapshotted at arm time (state.files is cleared on interception). */
     paths: string[]
-    /** Cached diff evidence; '' means "probed, none available". */
-    diffText?: string
+    /** Cached diff evidence; '' = probed, zero net change; null = no git evidence (non-git or git failure). */
+    diffText?: string | null
   } | null
   /** Set by the review_acknowledge tool — the sole review-completion signal. */
   acknowledged: boolean
@@ -206,9 +206,10 @@ export function clearTurnWrites(state: GateState): void {
   state.bashCommands = []
 }
 
-// Evidence for the review: the git diff of the touched files, or null when no
-// git repo / git failure / empty diff. Truncated to 300 lines so a huge change
-// cannot blow up the context.
+// Evidence for the review: the git diff of the touched files. '' = git worked
+// but the turn has zero net change vs HEAD (waiver-eligible); null = no git
+// repo / git failure (no measurement — conservative). Truncated to 300 lines
+// so a huge change cannot blow up the context.
 export async function collectDiff(files: readonly string[]): Promise<string | null> {
   const first = files[0]
   if (!first) return null
@@ -230,7 +231,7 @@ export async function collectDiff(files: readonly string[]): Promise<string | nu
       ['-C', root, 'diff', 'HEAD', '--', ...files],
       { timeout: 2000, maxBuffer: 4 << 20 },
     )
-    if (!stdout.trim()) return null
+    if (!stdout.trim()) return ''
     const lines = stdout.split('\n')
     // ponytail: fixed 300-line cap — a reviewer re-runs git diff for the tail
     if (lines.length > 300) {

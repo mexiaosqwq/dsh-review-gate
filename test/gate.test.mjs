@@ -572,6 +572,11 @@ test('collectDiff: git repo returns a diff, non-git dir returns null', async () 
   const diff = await collectDiff([join(dir, 'a.txt')])
   assert.ok(diff, 'git repo should yield a diff')
   assert.match(diff, /\+new line/)
+  assert.equal(
+    await collectDiff([join(dir, 'a.tsx')]),
+    '',
+    'committed-unchanged file -> empty string (zero net change, waiver-eligible)',
+  )
   const plain = await mkdtemp(join(_tmpdir(), 'rg-plain-'))
   await writeFile(join(plain, 'x.txt'), 'x')
   assert.equal(await collectDiff([join(plain, 'x.txt')]), null, 'non-git dir -> null')
@@ -1403,6 +1408,58 @@ test('assemble: auto + single tiny file waives the review (no section, waived re
   } finally {
     await fs.rm(receiptDir, { recursive: true, force: true })
   }
+})
+
+test('assemble: empty diff waives in auto; fixed micro and non-git keep honest labels', async () => {
+  const { apply } = await import('../lib/index.js')
+
+  // auto + single file written back to its HEAD content -> zero net change -> waived
+  const ctxA = fakeCtx()
+  const dir = await mkdtempGitRepo()
+  await writeFile(join(dir, 'a.txt'), 'base\n') // back to HEAD content
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-waive-empty-'))
+  try {
+    apply(ctxA, { ...baseConfig, exemptBelowLines: 10, receiptDir })
+    const steered = []
+    const agent = { id: 'waive-empty', steer: (m) => steered.push(m) }
+    ctxA.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent })
+    const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+    const outA = await ctxA.listeners.get('system-prompt/assemble')[0](assembly, { agent }, async () => assembly)
+    assert.equal(outA.contexts.find((c) => c.name === 'review-gate'), undefined, 'zero net change owes no review section')
+    ctxA.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+    assert.equal(steered.length, 0, 'empty-diff waiver closes without steering')
+    await new Promise((r) => setTimeout(r, 25))
+    const receipt = JSON.parse(await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8'))
+    assert.equal(receipt.outcome, 'waived', 'empty diff is a measurement, not a missing one')
+    assert.equal(receipt.changedLines, 0)
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+
+  // fixed micro + empty diff -> reviewed, with the honest zero-change hint
+  const ctxB = fakeCtx()
+  apply(ctxB, { ...baseConfig, mode: 'micro', exemptBelowLines: 10 })
+  const agentB = { id: 'fixed-empty', steer: () => {} }
+  ctxB.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent: agentB })
+  const assemblyB = { contexts: [], sections: [], tools: [], variables: {} }
+  const outB = await ctxB.listeners.get('system-prompt/assemble')[0](assemblyB, { agent: agentB }, async () => assemblyB)
+  const sectionB = outB.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(sectionB, 'fixed micro still reviews')
+  assert.match(sectionB.text, /空 diff/, 'empty diff gets its own label, not the non-git one')
+
+  // non-git dir -> conservative review + the non-git hint, unchanged
+  const ctxC = fakeCtx()
+  const plain = await mkdtemp(join(_tmpdir(), 'rg-plain-hint-'))
+  await writeFile(join(plain, 'x.txt'), 'x')
+  apply(ctxC, { ...baseConfig, mode: 'micro', exemptBelowLines: 10 })
+  const agentC = { id: 'plain', steer: () => {} }
+  ctxC.emit('tools/result', { name: 'write', arguments: { file_path: join(plain, 'x.txt') }, agent: agentC })
+  const assemblyC = { contexts: [], sections: [], tools: [], variables: {} }
+  const outC = await ctxC.listeners.get('system-prompt/assemble')[0](assemblyC, { agent: agentC }, async () => assemblyC)
+  const sectionC = outC.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(sectionC, 'non-git arms still review (conservative)')
+  assert.match(sectionC.text, /非 git 环境/)
+  await fs.rm(plain, { recursive: true, force: true })
 })
 
 test('assemble: waiver does not fire past the threshold, on multi-file turns, or in fixed micro', async () => {

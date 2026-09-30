@@ -68,8 +68,8 @@ export interface GateState {
         files: number;
         /** Absolute paths snapshotted at arm time (state.files is cleared on interception). */
         paths: string[];
-        /** Cached diff evidence; '' means "probed, none available". */
-        diffText?: string;
+        /** Cached diff evidence; '' = probed, zero net change; null = no git evidence (non-git or git failure). */
+        diffText?: string | null;
     } | null;
     /** Set by the review_acknowledge tool — the sole review-completion signal. */
     acknowledged: boolean;

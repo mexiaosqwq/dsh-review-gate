@@ -153,7 +153,6 @@ dsh plugin --profile web remove dsh-review-gate
 
 - bash 直写不走 FileSystem service（事件层不可见），命令模式启发式部分覆盖，有误报 / 漏报——只武装不阻断，方向保守（多触发一次复审无害）
 - 写失败的工具调用（如 edit 报错）也计入改动——同为方向保守
-- 空 diff（把文件改回原样）与非 git 环境在取证时同型（collectDiff 不区分两态），豁免按保守处理——触发快扫而非免审
 - `turn-stopping` 语义是「模型暂时不欠响应」，回合中间的停顿也会触发拦截，可能与进行中的工作交叠
 - 用户中断会清空 inbox，待执行的复审随之取消（用户干预优先）
 - 自定义 source kind 的消息在会话重建时依赖 inbox 投影对 source 的容忍（待审窗口极短，最坏丢失一次复审提示）
