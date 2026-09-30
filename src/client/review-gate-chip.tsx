@@ -203,8 +203,14 @@ export function ReviewGateChip(props: ReviewGateChipProps) {
         style={{
           border: 'none',
           borderRadius: 8,
-          padding: '4px 8px',
-          minHeight: 28,
+          // Fixed square footprint: the composer seat stretched the auto-width
+          // button into a wide rectangle around the 18px glyph (2026-09-30
+          // user report) — pin the box and opt out of flex growth.
+          width: 28,
+          height: 28,
+          padding: 0,
+          flex: '0 0 auto',
+          alignSelf: 'center',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
