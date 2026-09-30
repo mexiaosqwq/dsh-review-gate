@@ -390,6 +390,18 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
     }
   }
 
+  // Glob patterns compile through globToRegExp, where a `?` silently changes
+  // meaning (regex optional-quantifier) instead of erroring — reject it at the
+  // door so the HTTP API carries the same guard as the panel's input.
+  const assertGlobsValid = (picked: Record<string, unknown>): void => {
+    for (const key of ['ignoreGlobs', 'alwaysFullGlobs'] as const) {
+      const v = picked[key]
+      if (Array.isArray(v) && v.some((g) => typeof g === 'string' && g.includes('?'))) {
+        throw new Error('glob 模式不支持 ? —— 请用 * 或 **/')
+      }
+    }
+  }
+
   // Full-schema parse of the candidate config: invalid values (bad enum, NaN,
   // out-of-range) throw; valid ones parse clean. Always validated against
   // boot values + current overlay + the incoming patch, so a patch can never
@@ -453,6 +465,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       const picked = pickOverlay(body)
       const ignored = Object.keys(body).filter((k) => !(k in picked) && k !== 'scope' && k !== 'sessionId')
       try {
+        assertGlobsValid(picked)
         if (scope === 'session') {
           if (sessionId === undefined) {
             return respondJson(res, 400, { error: 'scope=session requires a sessionId' })
@@ -777,6 +790,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           return 'set 未提供任何可设键；可用键：' + OVERLAY_KEYS.filter((k) => k !== 'writeTools').join(', ')
         }
         try {
+          assertGlobsValid(patch)
           validatePatch(pickOverlay(patch))
         } catch (error) {
           return '校验失败，未生效：' + (error instanceof Error ? error.message : String(error))

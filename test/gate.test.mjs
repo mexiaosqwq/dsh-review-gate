@@ -1173,6 +1173,13 @@ test('config api: POST with an invalid value -> 400 and config untouched', async
     const got = mockRes()
     await api.handler(mockReq('GET'), got)
     assert.equal(got.body.config.mode, 'auto', 'invalid patch left no trace')
+
+    // `?` compiles silently-wrong in globToRegExp — rejected on both glob keys.
+    for (const key of ['ignoreGlobs', 'alwaysFullGlobs']) {
+      const q = mockRes()
+      await api.handler(mockReq('POST', { [key]: ['src/**/file?.ts'] }), q)
+      assert.equal(q.code, 400, `${key} with ? -> 400`)
+    }
   } finally {
     await fs.rm(receiptDir, { recursive: true, force: true })
   }
@@ -1307,6 +1314,15 @@ test('config api: GET returns per-session state summary after a tracked write', 
   assert.equal(s.chain, 0)
   assert.deepEqual(s.pending, { action: 'micro', files: 1 }, 'one tracked file arms a micro review')
   assert.equal(got.body.states.bogus, undefined)
+
+  // `?sessionId=` opts into that session's effective full config.
+  const posted = mockRes()
+  await api.handler(mockReq('POST', { mode: 'full', scope: 'session', sessionId: 'agent-m2' }), posted)
+  assert.equal(posted.code, 200, 'session-scope patch accepted')
+  const withQs = mockRes()
+  await api.handler({ method: 'GET', url: '/plugin/review-gate/config?sessionId=agent-m2' }, withQs)
+  assert.equal(withQs.body.effective?.mode, 'full', 'effective carries the session view')
+  assert.ok(withQs.body.states['agent-m2'], 'session counters still keyed')
 })
 
 test('config api: GET receipt stats count today only, last line surfaced', async () => {

@@ -90,9 +90,9 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 
 **运行时调整（即时生效，无需重启）**——力度的日常调节走这里：
 
-- **网页面板**（规划中）：会话输入框区的审查状态 chip，点击弹窗直接切档——client 半区是下一里程碑
+- **网页面板**：会话输入框区的审查力度 chip（四态盾形图标），点击弹窗直接切档；M2 起弹窗内含调参表单（5 个阈值数字 + 豁免/强制全面 glob 清单 + 「高级」折叠区 writeTools）与实时仪表盘（本会话链/漂移/疲劳计数 + 今日复审/止损统计）——改一项 POST 一项，即时生效；会话/全局作用域切换跟随弹窗顶部的 scope toggle
 - **对话**：让 agent 调 `review_gate_config` 工具——「把审查调到 full」「复审力度调轻一点」「恢复默认」，get/set/reset 即时生效
-- **HTTP**（面板后端，也可 curl）：`GET /plugin/review-gate/config` 读；`POST` 同路径提交部分键即改（未知键忽略并在响应 `ignored` 列出）；`POST /plugin/review-gate/config/reset` 恢复启动时配置
+- **HTTP**（面板后端，也可 curl）：`GET /plugin/review-gate/config` 读（`?sessionId=` 附带返回该会话生效完整配置 `effective`、活会话计数 `states`、今日回执统计 `receipts`）；`POST` 同路径提交部分键即改（未知键忽略并在响应 `ignored` 列出；glob 键含 `?` 直接 400——`globToRegExp` 对 `?` 静默错译，三入口同守卫）；`POST /plugin/review-gate/config/reset` 恢复启动时配置
 
 运行时可调键 = `mode / fullAtFiles / fullAtLines / milestoneAtFiles / maxChain / noNewReviewsBeforeDemotion / alwaysFullGlobs / ignoreGlobs`（HTTP 面额外收 `writeTools`）。改动持久化到 `receiptDir` 下的 `config.json` 覆盖层，重启后依然生效。
 
