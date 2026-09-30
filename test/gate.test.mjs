@@ -1334,7 +1334,9 @@ test('config api: GET receipt stats count today only, last line surfaced', async
     const yesterday = now - 86_400_000
     const lines = [
       JSON.stringify({ ts: yesterday, action: 'micro', outcome: 'acknowledged' }),
+      JSON.stringify({ ts: yesterday, outcome: 'waived', files: ['y.ts'], changedLines: 2 }),
       JSON.stringify({ ts: now - 2000, outcome: 'stop_loss', action: 'full', chain: 2 }),
+      JSON.stringify({ ts: now - 1500, outcome: 'waived', files: ['x.ts'], changedLines: 1 }),
       JSON.stringify({ ts: now - 1000, outcome: 'acknowledged', action: 'micro', findings: [] }),
       '{torn line',
     ]
@@ -1344,7 +1346,7 @@ test('config api: GET receipt stats count today only, last line surfaced', async
     const api = mountWebApi(ctx).find((r) => r.path === '/plugin/review-gate/config')
     const got = mockRes()
     await api.handler(mockReq('GET'), got)
-    assert.deepEqual(got.body.receipts.today, { reviews: 1, stopLoss: 1 }, 'today-only counts')
+    assert.deepEqual(got.body.receipts.today, { reviews: 1, stopLoss: 1, waived: 1 }, 'today-only counts; waived rows counted without an action key')
     assert.equal(got.body.receipts.last.action, 'micro', 'newest line surfaced as last')
   } finally {
     await fs.rm(receiptDir, { recursive: true, force: true })

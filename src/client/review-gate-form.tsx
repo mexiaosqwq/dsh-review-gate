@@ -26,7 +26,7 @@ export interface GateStateSummary {
 
 /** Receipt audit-log tail stats (today-only counts + newest line). */
 export interface ReceiptStats {
-  today: { reviews: number; stopLoss: number }
+  today: { reviews: number; stopLoss: number; waived?: number } // waived: absent until the host restart ships the counter (2026-09-30)
   last: { ts: number; outcome?: string; action?: string } | null
 }
 
@@ -101,7 +101,7 @@ export function GateDashboard(props: {
         <div style={{ opacity: 0.6 }}>本会话：尚无写入记录</div>
       )}
       {today ? (
-        <div>今日：复审 {today.reviews} · 止损 {today.stopLoss}</div>
+        <div>今日：复审 {today.reviews} · 止损 {today.stopLoss}{typeof today.waived === 'number' ? ` · 豁免 ${today.waived}` : ''}</div>
       ) : null}
     </div>
   )

@@ -384,10 +384,10 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
    * Counts are scoped to today (local midnight); `last` is the newest line.
    */
   const readReceiptStats = (): {
-    today: { reviews: number; stopLoss: number }
+    today: { reviews: number; stopLoss: number; waived: number }
     last: { ts: number; outcome?: string; action?: string } | null
   } => {
-    const empty = { today: { reviews: 0, stopLoss: 0 }, last: null }
+    const empty = { today: { reviews: 0, stopLoss: 0, waived: 0 }, last: null }
     try {
       const file = joinPath(config.receiptDir ?? RECEIPT_DIR, 'receipts.jsonl')
       if (!existsSync(file)) return empty
@@ -398,7 +398,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
       const midnight = new Date()
       midnight.setHours(0, 0, 0, 0)
       const todayStart = midnight.getTime()
-      const stats = { today: { reviews: 0, stopLoss: 0 }, last: null as null | { ts: number; outcome?: string; action?: string } }
+      const stats = { today: { reviews: 0, stopLoss: 0, waived: 0 }, last: null as null | { ts: number; outcome?: string; action?: string } }
       for (const line of raw.split('\n')) {
         if (!line) continue
         try {
@@ -412,6 +412,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           stats.last = stats.last === null || entry.ts >= stats.last.ts ? entry : stats.last
           if (entry.ts < todayStart) continue
           if (entry.outcome === 'stop_loss') stats.today.stopLoss += 1
+          else if (entry.outcome === 'waived') stats.today.waived += 1
           else if (entry.action !== undefined) stats.today.reviews += 1
         } catch { /* torn or foreign line — skip it */ }
       }

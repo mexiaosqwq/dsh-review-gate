@@ -38,7 +38,7 @@
 
 **验收**：build 清；gate 单元全绿（新增覆盖层往返/未知键忽略/POST 校验 400/fake webServer 接线 GET+POST+reset/工具 set-get-reset）；realloop 6/6 不回归；真机（web profile 重启后）curl GET/POST 即时改档 + receipts 照常。
 
-## M1 = Phase 2：client 面板（下一批）
+## M1 = Phase 2：client 面板（已落地 2026-09-30，M2 扩围同日完成，见上方状态行）
 
 - 双 tsconfig + client tsdown 构建 + `dsh.client` 声明（本仓库首次开 client 半区）。
 - 输入框区 chip（slot 接缝候选 `conversation.composer.dock` / `input.left`，**开写前按当版 ui-conversation SlotMap 现查**）+ 点击弹窗（容器候选 composer dock 或 `shell.overlay`，移动优先：限高、内部滚动、大触控目标）。

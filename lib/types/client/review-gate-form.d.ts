@@ -15,6 +15,7 @@ export interface ReceiptStats {
     today: {
         reviews: number;
         stopLoss: number;
+        waived?: number;
     };
     last: {
         ts: number;
