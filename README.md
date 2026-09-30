@@ -65,6 +65,16 @@ flowchart TD
 
 ### 安装
 
+npm 安装（推荐，从 registry 拉发布版）：
+
+```sh
+dsh plugin --profile web add dsh-review-gate
+```
+
+然后**重启目标 profile**——宿主只在启动时加载插件 bundle，之后不再重读磁盘。
+
+从源码安装（要改源码或使用未发布提交时用）：
+
 ```sh
 git clone https://github.com/mexiaosqwq/dsh-review-gate.git ~/dsh-review-gate
 cd ~/dsh-review-gate
@@ -72,9 +82,7 @@ npm install                                    # 装插件自身的 peer 依赖�
 dsh plugin --profile web add ~/dsh-review-gate # 注册进目标 profile
 ```
 
-然后**重启目标 profile**——宿主只在启动时加载插件 bundle，之后不再重读磁盘。
-
-安装机制（一句话）：`dsh plugin add` 是 pnpm 透传，本地目录以 `link:` 符号链接进 profile，宿主按磁盘路径直接读源目录——所以**更新不需要重新 add**。
+安装机制（一句话）：`dsh plugin add` 是 pnpm 透传，本地目录以 `link:` 符号链接进 profile，宿主按磁盘路径直接读源目录——所以**源码形态的更新不需要重新 add**。
 
 验证：
 
@@ -114,6 +122,15 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 启动序：schema 默认 → bundle patch → **存储覆盖层**（面板/工具改动最后落地、优先级最高）。全部键与默认值见下节配置表（schema 权威：`dsh --profile web --dump-config-schema`）。
 
 ### 更新
+
+npm 安装形态：重新 add 即拉最新发布版：
+
+```sh
+dsh plugin --profile web add dsh-review-gate
+# 重启目标 profile
+```
+
+源码安装形态：
 
 ```sh
 cd ~/dsh-review-gate && git pull && npm run build
