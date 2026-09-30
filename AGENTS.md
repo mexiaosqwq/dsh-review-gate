@@ -59,7 +59,7 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 1. `tools/result` → trackWrite（按 writeTools 清单识别，读 `args.file_path`）+ bash 写模式启发式（BASH_WRITE_RE，宁多触发不漏触发）→ gradeAndArm：decideReview 即时分档置 pendingReview，每次新写使旧回执失效（新改动欠新复审）
 2. `system-prompt/assemble` → pendingReview 期间向 runtime-context 注入 `review-gate` 命名段：指令文本 + 懒取证 git diff（arm 后首次 collectDiff，300 行截断，非 git 降级提示）+ bash 命令清单；micro 档 diff 行数 ≥ fullAtLines 现场升格 full。**不进对话流**——自定义 MessageSourceMap kind `'review-gate'`，client 按 source.kind !== 'user' 折叠渲染
 3. `agent/turn-stopping` → handleTurnStopping：已 ack → 结算放行（full 结算 sessionFiles 漂移）；未 ack 且 chain < maxChain → steer 驱动消息（source.kind='review-gate'），chain+1，pendingReview 保留；chain 到顶 → 止损放行 + stop_loss 审计行
-4. `review_acknowledge` 工具（apply 顶层注册）→ 唯一结算点：acknowledged=true、审计行、pendingReview=null、clearTurnWrites、chain=0；ack 后收到客户端重放 → 走残渣清理分支提示直接结案，不重记
+4. `review_acknowledge` 工具（apply 顶层注册）→ 唯一结算点：acknowledged=true、审计行、pendingReview=null、clearTurnWrites、chain=0；ack 后收到客户端重放 → 走残渣清理分支提示直接结案，不重记；**无 pendingReview（或零写入会话连 state 都没有）→ 按 `source: on_request` 落回执**（2026-09-30 触发词契约的主动评审结算——用户说「审查」而闸门未拦时，回执也要落账，游离 ack 因此可审计而非静默）。
 5. `agent/inbox/claimed` → chain 衰减 1（止损后每个用户回合保底恢复 1 轮复审）；**source-gate**：kind==='review-gate' 的自产 driver 消息跳过衰减
 6. `agent/disposed` → states 删除
 

@@ -503,12 +503,20 @@ test('ack: stale receipt invalidated by a fresh write; no pending review -> igno
   ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/b.ts' }, agent })
   ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
   assert.equal(steered.length, 1, 'fresh write invalidates the stale receipt')
-  // b) no pending review (fresh agent, zero writes): ack is ignored
-  const out = await ack.execute(
-    { action: 'micro', files: [], findings: [], fixes_made: false, summary: '乱调' },
+  // b) no pending review (fresh agent, zero writes): the on-request usage
+  // contract settles the receipt instead of ignoring it (2026-09-30).
+  const dir2 = await fs.mkdtemp(join(_tmpdir(), 'rg-onreq-'))
+  const ctx2 = fakeCtx()
+  apply(ctx2, { ...baseConfig, receiptDir: dir2 })
+  const ack2 = getAck(ctx2)
+  const out = await ack2.execute(
+    { action: 'micro', files: [], findings: [], fixes_made: false, summary: '主动评审' },
     { agent: { id: 'ack3b', steer: () => {} } },
   )
-  assert.ok(String(out).includes('忽略'), 'ack without pending review is ignored')
+  assert.ok(String(out).includes('主动评审'), 'write-free session ack settles as an on-request review')
+  const onreq = JSON.parse((await fs.readFile(join(dir2, 'receipts.jsonl'), 'utf8')).trim())
+  assert.equal(onreq.source, 'on_request', 'receipt carries the on_request source')
+  await fs.rm(dir2, { recursive: true, force: true })
 })
 
 test('ack: maxChain stop-loss still passes unacknowledged closes', async () => {
@@ -794,17 +802,22 @@ test('pitfallsFile: full instruction carries the known project pitfalls section'
   await fs.rm(pitfalls, { force: true })
 })
 
-test('ack: clean-state call short-circuits without logging an empty receipt', async () => {
+test('ack: clean-state call settles as an on-request receipt (2026-09-30 contract)', async () => {
   const { apply } = await import('../lib/index.js')
   const ctx = fakeCtx()
   const receiptDir = await fs.mkdtemp(join(_tmpdir(), 'rg-short-'))
   apply(ctx, { ...baseConfig, receiptDir })
   const ack = getAck(ctx)
   const agent = { id: 'sc', steer: () => {} }
+  // Write-free session: a user-asked review settles here — the receipt names
+  // its author and source, so a stray ack is auditable rather than silent.
   const result = await ack.execute({ action: 'micro', files: [], findings: [], fixes_made: false, summary: 'probe' }, { agent })
-  assert.ok(result.includes('回执忽略'), 'continuation-replayed calls get an explicit skip hint')
-  const file = join(receiptDir, 'receipts.jsonl')
-  assert.equal(await fs.access(file).then(() => true, () => false), false, 'no empty receipt line is written')
+  assert.ok(result.includes('主动评审'), 'clean-state ack returns the on-request settlement hint')
+  const lines = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim().split('\n')
+  assert.equal(lines.length, 1, 'exactly one receipt line')
+  const row = JSON.parse(lines[0])
+  assert.equal(row.source, 'on_request', 'receipt source = on_request')
+  assert.equal(row.agentId, 'sc', 'receipt names its author')
   await fs.rm(receiptDir, { recursive: true, force: true })
 })
 

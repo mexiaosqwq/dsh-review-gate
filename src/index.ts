@@ -294,8 +294,11 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         // receipt — never a casual write-up. Two lines, always on.
         out.contexts.push({
           name: 'review-gate-usage',
-          text:
+          // braceGuard for uniformity: this lane must stay turn-kill-proof even
+          // if the wording ever gains a brace pair.
+          text: braceGuard(
             '当用户要求「审查/复审/代码检查/review」某次改动或某些文件时：按当前会话的复审档位执行本插件协议（review_gate_config action=get 可查档位；micro=五分区快扫，full=全面评审），结束后调用 review_acknowledge 结构化回执。缺省档位即会话默认，无需每次确认。',
+          ),
         })
         if (state?.pendingReview) {
           const p = state.pendingReview
@@ -533,19 +536,13 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         }
         const agentId = exec?.agent?.id
         const state = agentId ? states.get(agentId) : undefined
-        if (!state) return '（当前无待复审回合，回执忽略）'
-        // Residue path: steer keeps pendingReview armed and the client may
-        // replay the driver hint after the review already settled. Clear the
-        // residue and point the model at a short close — never re-log.
-        if (state.acknowledged) {
-          state.pendingReview = null
-          clearTurnWrites(state)
-          return '复审早已完成并回执（本消息为重发），状态已清理。请直接输出简短结案。'
-        }
-        if (!state.pendingReview) {
-          // On-request review settlement (2026-09-30): a user-asked review has
-          // no armed turn; still log the receipt (source: on_request) so the
-          // audit trail covers requested reviews, not just intercepted ones.
+        // On-request review settlement (2026-09-30 usage contract): a
+        // user-asked review has no armed turn and — in a write-free session —
+        // no state at all. Both shapes must still log the receipt
+        // (source: on_request) so the audit trail covers requested reviews,
+        // not just intercepted ones. Stray acks in dead sessions still log
+        // only when an agent id exists (the receipt names its author).
+        const settleOnRequest = async (): Promise<string> => {
           await appendReceipt(config.receiptDir ?? RECEIPT_DIR, {
             agentId,
             outcome: 'acknowledged',
@@ -558,6 +555,19 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           })
           return `复审回执已登记（主动评审，${a.action}，${a.files.length} 文件，findings ${(a.findings ?? []).length} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
         }
+        if (!state) {
+          if (agentId === undefined) return '（当前无待复审回合，回执忽略）'
+          return await settleOnRequest()
+        }
+        // Residue path: steer keeps pendingReview armed and the client may
+        // replay the driver hint after the review already settled. Clear the
+        // residue and point the model at a short close — never re-log.
+        if (state.acknowledged) {
+          state.pendingReview = null
+          clearTurnWrites(state)
+          return '复审早已完成并回执（本消息为重发），状态已清理。请直接输出简短结案。'
+        }
+        if (!state.pendingReview) return await settleOnRequest()
         state.acknowledged = true
         // Convergence fatigue counter (v5-F1): a settled full review with zero
         // new findings inches the session toward demoting the milestone
