@@ -3,7 +3,7 @@
 ## Project
 
 - DSH 宿主插件：回合级代码复审闸门。回合内发生文件写入（write/edit 工具，或 bash 命令命中写模式）→ 回合收尾前把 agent steer 回来执行分档自复审（micro 快扫 / full 全面），`review_acknowledge` 结构化回执是唯一完成信号；回执落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志。
-- 单包 TypeScript 插件，无子包。宿主经 `dsh plugin --profile web add ~/dsh-review-gate` 安装，`cordis.patch.yml` 往 profile 插一层 `id: review-gate`。
+- 单包 TypeScript 插件，无子包。双通道分发：npm `dsh-review-gate`（用户安装，README npm 优先）+ GitHub（`lib/` 入库可直装）；本地开发仍用路径 symlink 安装，`cordis.patch.yml` 往 profile 插一层 `id: review-gate`。
 - 入口 = `src/index.ts` 的 `apply()`（package.json main 指向构建产物 `lib/index.js`）。公开面靠 index.ts 顶部 `export *` 重导出 state/instruction——拆分文件后外部导入不变，改文件名/导出名前先确认这层。
 
 ## Layout
@@ -17,13 +17,13 @@
 │  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；本会话/全局作用域切换写 HTTP 面，会话写入带 slot 注入的 props.sessionId；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
 ├─ scripts/           构建链闸门三件：build-client.mjs（包装 __ModuleLoader__ 闭包 + staging→smoke→原子发布 lib/client.js）· client-smoke.mjs（共享 smoke 执行器，构建发布前与已发布产物测试同源）· sanity-lib.mjs（host lib 导入自检）
 ├─ test/
-│  ├─ gate.test.mjs      81 例单元（import ../lib/index.js —— 不 build 就测旧码）
+│  ├─ gate.test.mjs      88 例单元（import ../lib/index.js —— 不 build 就测旧码）
 │  ├─ client-bundle.test.mjs  3 例：已发布产物执行级 smoke ×2 + smoke 闸门拒绝形态 ×1（bare-name 漏表/未知外部/错 id/空 inject）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
 ├─ lib/               tsc 产物，已入库（package main 指向 lib/，fresh clone 即可用；改 src 后重新 build 并一并提交）
 ├─ docs/
 │  ├─ superpowers/plans/  4 份计划：v2 回执化设计 · v4 realloop 测试配方 · overnight-v5 批次剧本 · ui-panel 调参面板
-│  └─ handover/           ~19 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账
+│  └─ handover/           20 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账（合计 21 个文件）
 ├─ cordis.patch.yml   bundle patch：- insert 一层 id: review-gate
 ├─ README.md          机制/配置/部署约定的权威现状描述（改机制必同步）
 └─ package.json / tsconfig.json   strict · NodeNext · ES2022；peerDeps = dsh-agent/fs/llm/system-prompt/tools + cordis + schemastery
@@ -44,7 +44,7 @@
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
 npm run build                            # tsc → sanity(lib 可导入) → tsc client → smoke 闸门 → 原子发布 lib/；改 src 后必跑
-npm test                                 # gate 81 例 + client-bundle 3 例；先 build 再 test，否则测旧码
+npm test                                 # gate 88 例 + client-bundle 3 例（合计 91）；先 build 再 test，否则测旧码
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
 dsh plugin --profile web add ~/dsh-review-gate               # 安装/更新到 profile
@@ -52,6 +52,8 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 ```
 
 验证顺序：改 src → build → gate + realloop 全绿 → 提交（**含 lib/**）→ 真机验收（receipts.jsonl 留痕）；**client 半区改动（src/client/）刷新/热更即看，host 半区（index/state/instruction/config-live）改动才需重启 profile**。提交信息用 conventional commits（feat/fix/test/docs/refactor，git log 实况）。
+
+发布链（npm + GitHub Release，v0.1.1 实战定型）：`npm version <x.y.z> -m "chore: release v%s"`（双写 package.json + package-lock 并 commit + tag）→ `git push origin main v<x.y.z>` → `npm publish` → `gh release create v<x.y.z>`（惯例：标题 `v<ver> · 中文要点`，正文分节叙事、无附件、npm+GitHub 双安装命令，中间版本内容并入最新 Release；样例 = v0.1.1）。
 
 ## Architecture
 
@@ -92,6 +94,8 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 - **gate 推送的 runtime-context 文本必须过 braceGuard**：宿主 renderContextSections 对每个 context 无条件插值且无 interpolate:false 逃生门，文本含 `{{...}}`（如 JSX style 的 diff 证据）即抛 malformed prompt variable reference → agent-loop preStep 死 → 整个回合失败且 gate 重武装再死（循环崩，75fbb58 判例）。新增注入文本一律 `text: braceGuard(...)`。
 - **client bundle 坏 = GUI 整体拒载**（"1 entry did not activate"，用户进不去网页），不是"少个 chip"——生成代码必须有执行级检查（client-bundle smoke 已入 npm test 常跑链），panel 类改动 ship 前必真机。
 - **lib/ 即线上（symlink 安装），中间态改动会直接生效**——防线已结构化：build 链自带双闸门（host lib 导入自检 + client smoke，staging 不过 = lib 保持上一个好产物，实测拒绝路径），坏产物到不了 lib/；提交只应在完整检查点做。
+- **npm publish 后读端滞后 ≠ 发布失败**：首发实测 ~15 分钟、升版数分钟内 packument/tarball 仍 404 或滞留旧版（registry 自带 "being processed" 提示）；判别 = 同版本重发，403 EPUBLISHCONFLICT "cannot publish over..." 即写端已入库铁证——读端只需等追平，别重复发布或改版本号（2026-09-30 双验证）。
+- **本机（Termux 手机）不做 from-zero 安装验证**：全新 profile 的 pnpm 全量依赖安装（拉 @deepseek-ai/* 全栈含原生构建）2026-09-30 实测几乎卡死设备；分发验证轻量路径 = `npm pack --dry-run` 清单核对 + registry HTTP 检查 + 已装 profile `--dump-config`。
 
 ## Maintenance
 
