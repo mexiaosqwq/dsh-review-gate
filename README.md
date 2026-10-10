@@ -37,8 +37,8 @@ flowchart TD
 ```
 
 1. **写即武装**：监听 `tools/result`，write/edit 按 session 记录被写文件，每次写**即时重新分档**（`auto`：文件数、diff 行数、会话漂移、命中 `alwaysFullGlobs` → 全面；否则快扫）并置 pendingReview。bash 命令命中写模式（重定向 / `sed -i` / `mv` / `npm install`…）也会武装。
-2. **带证据的事中引导**：pendingReview 期间向 runtime-context 注入 `review-gate` 命名段——复审指令 + **本回合 git diff**（懒取证一次，300 行截断，非 git 目录降级提示）+ bash 疑似写入命令清单。不进对话流，客户端折叠渲染。
-3. **唯一完成信号**：模型完成复审后必须调用 `review_acknowledge` 工具提交结构化回执（action / files / findings / fixes_made / summary），落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志。每次新写会使旧回执失效——**新改动欠新复审**。
+2. **带证据的事中引导**：pendingReview 期间向 runtime-context 注入 `review-gate` 命名段——复审指令 + **本回合 git diff**（懒取证一次，300 行截断）+ bash 疑似写入命令清单。取证 = `git diff HEAD` 加**未跟踪新文件**（`git ls-files --others --exclude-standard` 检出后逐个 `git diff --no-index /dev/null <file>` 渲染成全增 diff，2026-10-10 修复：git diff 结构性不含未跟踪文件，新模块/新计划/新报告曾一律读成空 diff）。非 git 目录、无工具写入路径（仅 bash 武装）各有独立降级文案。不进对话流，客户端折叠渲染。
+3. **唯一完成信号**：模型完成复审后必须调用 `review_acknowledge` 工具提交结构化回执（action / files / findings / fixes_made / summary），落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志。每次新写会使旧回执失效——**新改动欠新复审**。审计行 `files` 字段双轨语义：`acknowledged` 行是模型自报清单（可能带 `~/` 形状、含未跟踪文件），`waived` / `stop_loss` 行才是闸门跟踪的原始集合——做数据分析只用后者。
 4. **拦截与止损**：回合将关时未回执 → steer 一条极简驱动消息把 agent 拉回；连续未回执最多 `maxChain` 次后止损放行，止损行为落 `stop_loss` 审计行，可统计复审放弃率。
 5. **防循环恢复**：用户新消息被认领时 chain 衰减 1——止损后每个用户回合保底恢复 1 轮复审；无写操作且无 bash 命中的回合把 chain 清零；`source.kind === 'review-gate'` 的自产驱动消息不参与衰减（防 steer 续步打穿止损）。
 
@@ -47,7 +47,7 @@ flowchart TD
 | 特性 | 说明 |
 |---|---|
 | 分档复审税 | `auto` 按改动体量分档：快扫管小改，全面复审留给大改与会话漂移，不让复审税吃掉小任务 |
-| diff 证据注入 | 复审指令自带本回合 git diff，消除「凭对话记忆复审」的漂移 |
+| diff 证据注入 | 复审指令自带本回合 git diff（含未跟踪新文件的全增 diff），消除「凭对话记忆复审」的漂移 |
 | 结构化回执 | findings 数组（文件 / 行号 / severity / note）+ fixes_made + summary，逐行审计可回放 |
 | 收敛疲劳防护 | 连续 K 次全面复审零新发现 → 会话漂移不再升格全面（借鉴 Codex stop-after-no-new，改造为会话级状态机） |
 | 止损与恢复 | `maxChain` 止损 + 用户回合保底恢复 + source 门控，防死循环也防误伤 |
@@ -154,7 +154,7 @@ dsh plugin --profile web remove dsh-review-gate
 | `mode` | `auto` | `off` 关闭 / `micro` 固定快扫 / `full` 固定全面 / `auto` 按改动体量分档 |
 | `fullAtFiles` | `3` | `auto` 模式下，改动文件数达到该值走全面复审 |
 | `fullAtLines` | `150` | diff 增删行数达到该值，快扫升格全面（行数在取证时懒判定） |
-| `exemptBelowLines` | `10` | `auto` 模式下，单文件回合的 diff 改动行数低于该值则**整回合免复审**（豁免落 `outcome:waived` 审计行；`0` 关闭；固定 micro/full 档不受影响；bash 写命中或多文件回合不豁免） |
+| `exemptBelowLines` | `10` | `auto` 模式下，单文件回合的 diff 改动行数低于该值则**整回合免复审**（豁免落 `outcome:waived` 审计行；`0` 关闭；固定 micro/full 档不受影响；bash 写命中或多文件回合不豁免；**改动行数含未跟踪新文件**，新建文件不再因「git diff 看不见」而被当成零改动豁免） |
 | `milestoneAtFiles` | `10` | `auto` 模式下，会话累计改动文件数达到该值视为漂移，升格全面复审（受 `noNewReviewsBeforeDemotion` 疲劳守卫钳制） |
 | `maxChain` | `2` | 连续未 ack 的拦截上限（止损） |
 | `writeTools` | `["write","edit"]` | 视为代码写入的工具名 |
@@ -169,6 +169,8 @@ dsh plugin --profile web remove dsh-review-gate
 闸门保证的是「**复审必发生**」（回执可审计）与「**复审必有证据**」（diff 注入），不保证「复审必找出所有 bug」——复审质量仍取决于模型执行指令的认真程度。
 
 - bash 直写不走 FileSystem service（事件层不可见），命令模式启发式部分覆盖，有误报 / 漏报——只武装不阻断，方向保守（多触发一次复审无害）
+- 空 diff 有两种成因：改动已提交（回合内 commit）或已还原回 HEAD——两者都是真测量，故仍是豁免资格；未跟踪新文件已由全增 diff 覆盖，不再混入这一类
+- 取证只覆盖 `writeTools` 记录的路径 + 未跟踪同路径；bash 直写仍无路径可取证，此时降级为命令清单（文案已与「非 git 环境」分开）
 - 写失败的工具调用（如 edit 报错）也计入改动——同为方向保守
 - `turn-stopping` 语义是「模型暂时不欠响应」，回合中间的停顿也会触发拦截，可能与进行中的工作交叠
 - 用户中断会清空 inbox，待执行的复审随之取消（用户干预优先）

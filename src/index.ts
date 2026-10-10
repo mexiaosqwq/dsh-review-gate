@@ -350,9 +350,11 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
             }
             const diffSection =
               p.diffText === null
-                ? '\n\n（非 git 环境：请对照你本回合的编辑记录复审）'
+                ? p.paths.length === 0
+                  ? '\n\n（本回合没有工具写入路径（只有 bash 命令命中写模式），diff 无法生成——请按下面的命令清单自行核对改了什么）'
+                  : '\n\n（非 git 环境：请对照你本回合的编辑记录复审）'
                 : p.diffText === ''
-                  ? '\n\n（空 diff：本回合写入与 HEAD 无净差异——按你的编辑记录自查）'
+                  ? '\n\n（空 diff：工作区与 HEAD 无差异——改动可能已被提交或已还原，请结合编辑记录自查）'
                   : `\n\n### 本回合改动 diff（HEAD 起）\n\`\`\`diff\n${p.diffText}\n\`\`\``
             const bashSection =
               state.bashCommands.length > 0
@@ -626,7 +628,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         findings: {
           type: 'array',
           description:
-            '发现的问题列表，每项 {file, line?, severity(info|minor|major|critical), note}',
+            '发现的问题列表，每项 {file, line?, severity(info|minor|major|critical，仅此四值), note}',
         },
         fixes_made: {
           type: 'boolean',

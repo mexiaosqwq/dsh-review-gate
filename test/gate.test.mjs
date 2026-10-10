@@ -582,6 +582,24 @@ test('collectDiff: git repo returns a diff, non-git dir returns null', async () 
   assert.equal(await collectDiff([join(plain, 'x.txt')]), null, 'non-git dir -> null')
 })
 
+test('collectDiff: untracked new files are rendered as additions (2026-10-10 blind-spot fix)', async () => {
+  const { collectDiff } = await import('../lib/index.js')
+  const dir = await mkdtempGitRepo()
+  const fresh = join(dir, 'brand-new.ts')
+  await writeFile(fresh, 'line one\nline two\n')
+
+  const only = await collectDiff([fresh])
+  assert.ok(only, 'a brand-new file must yield evidence, not an empty diff')
+  assert.match(only, /new file mode/, 'rendered as an addition')
+  assert.match(only, /\+line two/)
+
+  // Mixed turn: a tracked modification AND a brand-new file both belong in the
+  // evidence — the shape where the new file used to disappear silently.
+  const mixed = await collectDiff([join(dir, 'a.txt'), fresh])
+  assert.match(mixed, /\+new line/, 'tracked part present')
+  assert.match(mixed, /\+line two/, 'untracked part appended')
+})
+
 test('assemble: diff containing {{...}} (JSX style) must not kill the turn', async () => {
   // Real-world killer (2026-09-30): a chip restyle diff carried JSX
   // `style={{ ... }}`; the host interpolator (dsh-system-prompt
@@ -1460,6 +1478,51 @@ test('assemble: empty diff waives in auto; fixed micro and non-git keep honest l
   assert.ok(sectionC, 'non-git arms still review (conservative)')
   assert.match(sectionC.text, /非 git 环境/)
   await fs.rm(plain, { recursive: true, force: true })
+})
+
+test('assemble: a brand-new file with a real diff is reviewed, never waived (2026-10-10 blind-spot fix)', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const dir = await mkdtempGitRepo()
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-waive-newfile-'))
+  const fresh = join(dir, 'brand-new.ts')
+  // 12 added lines, each above exemptBelowLines(10): before the fix the
+  // untracked file produced an empty diff, changedLines read 0, and the turn
+  // was waived with no review at all (the production-diagnosed failure mode).
+  await writeFile(fresh, Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n') + '\n')
+  try {
+    apply(ctx, { ...baseConfig, exemptBelowLines: 10, receiptDir })
+    const agent = { id: 'waive-newfile', steer: () => {} }
+    ctx.emit('tools/result', { name: 'write', arguments: { file_path: fresh }, agent })
+    const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+    const out = await ctx.listeners.get('system-prompt/assemble')[0](assembly, { agent }, async () => assembly)
+    const section = out.contexts.find((c) => c.name === 'review-gate')
+    assert.ok(section, 'a 12-line new file owes a review')
+    assert.match(section.text, /\+line 11/, 'the reviewer actually sees the new file content')
+    await new Promise((r) => setTimeout(r, 25))
+    await assert.rejects(
+      fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8'),
+      'a turn with real evidence must not produce a waiver receipt',
+    )
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
+})
+
+test('assemble: bash-only arm says "no tool-written paths", not "non-git"', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, { ...baseConfig, mode: 'micro' })
+  const agent = { id: 'bash-only', steer: () => {} }
+  // Write-pattern hit with no tool write: p.paths stays empty, so the evidence
+  // probe returns null. That is a missing measurement, NOT a non-git repo.
+  ctx.emit('tools/result', { name: 'bash', arguments: { command: 'echo x > /tmp/y' }, agent })
+  const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+  const out = await ctx.listeners.get('system-prompt/assemble')[0](assembly, { agent }, async () => assembly)
+  const section = out.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(section, 'bash write-pattern still arms a review')
+  assert.match(section.text, /没有工具写入路径/)
+  assert.doesNotMatch(section.text, /非 git 环境/, 'empty paths must not be mislabelled as a non-git repo')
 })
 
 test('assemble: waiver does not fire past the threshold, on multi-file turns, or in fixed micro', async () => {

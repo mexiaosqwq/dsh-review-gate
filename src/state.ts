@@ -206,10 +206,11 @@ export function clearTurnWrites(state: GateState): void {
   state.bashCommands = []
 }
 
-// Evidence for the review: the git diff of the touched files. '' = git worked
-// but the turn has zero net change vs HEAD (waiver-eligible); null = no git
-// repo / git failure (no measurement — conservative). Truncated to 300 lines
-// so a huge change cannot blow up the context.
+// Evidence for the review: the git diff of the touched files, PLUS any of those
+// files git does not track yet. '' = git worked but the turn has zero net change
+// vs HEAD (waiver-eligible); null = no git repo / no paths / git failure (no
+// measurement — conservative). Truncated to 300 lines so a huge change cannot
+// blow up the context.
 export async function collectDiff(files: readonly string[]): Promise<string | null> {
   const first = files[0]
   if (!first) return null
@@ -231,15 +232,57 @@ export async function collectDiff(files: readonly string[]): Promise<string | nu
       ['-C', root, 'diff', 'HEAD', '--', ...files],
       { timeout: 2000, maxBuffer: 4 << 20 },
     )
-    if (!stdout.trim()) return ''
-    const lines = stdout.split('\n')
-    // ponytail: fixed 300-line cap — a reviewer re-runs git diff for the tail
-    if (lines.length > 300) {
-      return lines.slice(0, 300).join('\n') + '\n…（已截断，完整 diff 请自行 git diff）'
+    // `git diff` structurally never shows untracked files, so a newly created
+    // file — the most review-worthy artifact an agent produces — used to read
+    // as an empty diff: false "zero net change" evidence, and (auto mode) a
+    // waiver that skipped the review entirely. Render those paths as additions
+    // (2026-10-10 fix; audit proved 164/202 zero-measurement waivers were
+    // brand-new files that were simply absent from HEAD).
+    let text = stdout
+    for (const rel of await untrackedAmong(root, files)) {
+      const added = await diffNewFile(joinPath(root, rel))
+      if (added) text += (text && !text.endsWith('\n') ? '\n' : '') + added
     }
-    return stdout
+    if (!text.trim()) return ''
+    const lines = text.split('\n')
+    // ponytail: fixed 300-line cap — a reviewer fetches the tail itself; an
+    // untracked file never shows up in `git diff`, so point at the file too.
+    if (lines.length > 300) {
+      return lines.slice(0, 300).join('\n') + '\n…（已截断：跟踪文件的尾部自行 git diff，未跟踪新文件请直接读该文件）'
+    }
+    return text
   } catch {
     return null
+  }
+}
+
+// Untracked (and not git-ignored) paths among `files`, relative to the repo
+// root. --exclude-standard keeps build artifacts/node_modules out of the
+// evidence, matching what `git diff` itself would have shown.
+async function untrackedAmong(root: string, files: readonly string[]): Promise<string[]> {
+  const { stdout } = await execFileP(
+    'git',
+    ['-C', root, 'ls-files', '--others', '--exclude-standard', '--', ...files],
+    { timeout: 2000, maxBuffer: 1 << 20 },
+  )
+  return stdout.split('\n').filter(Boolean)
+}
+
+// One untracked file as an all-additions unified diff. `git diff --no-index`
+// exits 1 whenever the two sides differ — i.e. in every interesting case — so
+// the diff has to be read off the rejection; throwing it away would turn real
+// evidence into "no measurement".
+async function diffNewFile(absPath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['diff', '--no-index', '--', '/dev/null', absPath],
+      { timeout: 2000, maxBuffer: 4 << 20 },
+    )
+    return stdout
+  } catch (err) {
+    const stdout = (err as { stdout?: unknown }).stdout
+    return typeof stdout === 'string' ? stdout : ''
   }
 }
 
