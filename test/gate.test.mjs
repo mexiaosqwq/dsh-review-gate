@@ -544,6 +544,20 @@ test('ack: instruction text demands the receipt call', async () => {
   assert.ok(annotated.includes('> 来源：pitfalls.md') && annotated.includes('坑：globToRegExp'), 'pitfalls body and provenance line injected')
 })
 
+// ---- Batch 1 Task 2: Qoder-style review precision discipline (both tiers) ----
+
+test('instruction: precision discipline present in both tiers', async () => {
+  const { reviewInstructionText } = await import('../lib/index.js')
+  for (const action of ['micro', 'full']) {
+    const text = reviewInstructionText(action, 1)
+    assert.ok(text.includes('只报本次 diff 引入的问题'), `${action}: scope limited to this diff`)
+    assert.ok(text.includes('pre-existing'), `${action}: pre-existing excluded`)
+    assert.ok(text.includes('周边代码'), `${action}: surrounding-code check`)
+    assert.ok(text.includes('No actionable findings found'), `${action}: empty result is valid`)
+    assert.ok(text.includes('严重度'), `${action}: severity ordering`)
+  }
+})
+
 // ---- v2 Task 2: git-diff evidence injected into the review instruction ----
 
 import { mkdtemp, writeFile } from 'node:fs/promises'
