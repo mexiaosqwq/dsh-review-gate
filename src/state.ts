@@ -123,11 +123,17 @@ export function shouldWaive(input: {
 // quantifier character that the globstar expansion introduces (real bug
 // caught by the glob round-trip check); add an explicit pattern instead.
 export function globToRegExp(glob: string): RegExp {
+  // Tokenize globstars before the single-star pass. Substituting `(?:.*/)?` /
+  // `.*` first and then running the `*` pass rewrites the inserted `.*` into
+  // `.[^/]*`, collapsing every `**` to a single-segment `*` (2026-10-23 bug:
+  // `**/auth/**` failed to match multi-level absolute paths).
   const body = glob
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '(?:.*/)?')
-    .replace(/\*\*/g, '.*')
+    .replace(/\*\*\//g, '\u0000')
+    .replace(/\*\*/g, '\u0001')
     .replace(/\*/g, '[^/]*')
+    .replace(/\u0000/g, '(?:.*/)?')
+    .replace(/\u0001/g, '.*')
   return new RegExp(`^${body}$`)
 }
 

@@ -790,6 +790,40 @@ test('alwaysFullGlobs: touching a core contract file forces full depth', async (
     'micro',
     'ordinary files keep auto grading',
   )
+  assert.equal(
+    decideReview({
+      writeFiles: 1,
+      paths: ['/data/data/com.termux/files/home/proj/spec/a.md'],
+      chain: 0,
+      config: cfg,
+    }),
+    'full',
+    'multi-level absolute paths (the real shape) still hit the glob',
+  )
+})
+
+test('globToRegExp: globstar spans multiple directory levels', async () => {
+  const { globToRegExp, isIgnored } = await import('../lib/index.js')
+  const cases = [
+    ['**/auth/**', '/data/data/com.termux/files/home/proj/src/auth/login.ts', true],
+    ['**/auth/**', 'src/auth/login.ts', true],
+    ['**/auth/**', '/proj/src/author.ts', false],
+    ['**/migrations/**', '/proj/db/migrations/001.sql', true],
+    ['**/*.sql', '/proj/db/schema.sql', true],
+    ['**/node_modules/**', '/proj/node_modules/pkg/index.js', true],
+    ['src/**', 'src/deep/nested/x.ts', true],
+    ['src/**/x.ts', 'src/a/b/x.ts', true],
+    ['src/contracts/**', 'src/contracts/ui/a.ts', true],
+    ['*.ts', 'src/x.ts', false],
+  ]
+  for (const [glob, path, expected] of cases) {
+    assert.equal(globToRegExp(glob).test(path), expected, `${glob} vs ${path}`)
+  }
+  assert.equal(
+    isIgnored('/proj/node_modules/pkg/index.js', ['**/node_modules/**']),
+    true,
+    'ignoreGlobs carries the same multi-level semantics',
+  )
 })
 
 test('ack: findings are persisted in full, not as a count', async () => {
