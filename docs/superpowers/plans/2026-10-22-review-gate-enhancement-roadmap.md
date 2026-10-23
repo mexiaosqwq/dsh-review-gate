@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **Status: proposal — 待用户批准；批准前不执行。**
+> **Status: Batch 1 已于 2026-10-23 实施完成（662d786 ack v2 / 1a634e0 提示词纪律 / 17987f0 receipts-stats）；Batch 2/3 仍为 proposal — 待用户批准，批准前不执行。**
 >
-> 何时读：讨论/实施 review-gate 的提示词精度、回执 v2、审计统计、风险分层或独立 reviewer 时。Batch 1 可直接照做；Batch 2/3 只是方向与决策门，不是已批准任务。
+> 何时读：讨论/实施 review-gate 的提示词精度、回执 v2、审计统计、风险分层或独立 reviewer 时。Batch 1 已实施完成（记录与收尾口径见 §11）；Batch 2/3 只是方向与决策门，不是已批准任务。
 
 **Goal:** 在不改变闸门触发/结算语义的前提下，把复审提示词的精度提到 Qoder `/review` + Codex rubric 同级，并把回执升级为可度量的 v2 契约；同时提供一个零依赖的 receipts 统计脚本，为后续风险分层与独立 reviewer 提供数据。
 
