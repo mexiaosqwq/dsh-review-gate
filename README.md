@@ -195,7 +195,7 @@ dsh plugin --profile web remove dsh-review-gate
 │  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff
 │  └─ instruction.ts  复审指令文案：MICRO/FULL 两档五分区、reviewInstructionText、驱动消息
 ├─ test/
-│  ├─ gate.test.mjs      67 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
+│  ├─ gate.test.mjs      92 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop：止损裁决 / ack 即结算与重放零拦截 / veto 语义 / 双源交叉断言）
 ├─ lib/               tsc 产物（package main 指向，fresh clone 即用）
 ├─ cordis.patch.yml   bundle patch：向 profile 插一层 id: review-gate
@@ -205,7 +205,7 @@ dsh plugin --profile web remove dsh-review-gate
 ```sh
 npm install            # package-lock.json 权威
 npm run build          # tsc → lib/；改 src 后必跑
-npm test               # gate 单元 67 例（import lib/ —— 先 build 再 test，否则测旧码）
+npm test               # gate 单元 92 例（import lib/ —— 先 build 再 test，否则测旧码）
 node --test test/realloop.test.mjs   # 真时序 6 例（较慢，单独跑）
 ```
 

@@ -17,13 +17,13 @@
 │  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；本会话/全局作用域切换写 HTTP 面，会话写入带 slot 注入的 props.sessionId；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
 ├─ scripts/           构建链闸门三件：build-client.mjs（包装 __ModuleLoader__ 闭包 + staging→smoke→原子发布 lib/client.js）· client-smoke.mjs（共享 smoke 执行器，构建发布前与已发布产物测试同源）· sanity-lib.mjs（host lib 导入自检）
 ├─ test/
-│  ├─ gate.test.mjs      91 例单元（import ../lib/index.js —— 不 build 就测旧码）
+│  ├─ gate.test.mjs      92 例单元（import ../lib/index.js —— 不 build 就测旧码）
 │  ├─ client-bundle.test.mjs  3 例：已发布产物执行级 smoke ×2 + smoke 闸门拒绝形态 ×1（bare-name 漏表/未知外部/错 id/空 inject）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
 ├─ lib/               tsc 产物，已入库（package main 指向 lib/，fresh clone 即可用；改 src 后重新 build 并一并提交）
 ├─ docs/
-│  ├─ superpowers/plans/  4 份计划：v2 回执化设计 · v4 realloop 测试配方 · overnight-v5 批次剧本 · ui-panel 调参面板
-│  └─ handover/           20 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账（合计 21 个文件）
+│  ├─ superpowers/plans/  5 份计划：v2 回执化设计 · v4 realloop 测试配方 · overnight-v5 批次剧本 · ui-panel 调参面板 · 增强路线图
+│  └─ handover/           22 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账（合计 23 个文件）
 ├─ cordis.patch.yml   bundle patch：- insert 一层 id: review-gate
 ├─ README.md          机制/配置/部署约定的权威现状描述（改机制必同步）
 └─ package.json / tsconfig.json   strict · NodeNext · ES2022；peerDeps = dsh-agent/fs/llm/system-prompt/tools + cordis + schemastery
@@ -36,6 +36,7 @@
 - 追溯某决定为何拍板/缓办、用户授权记录 → `docs/handover/decisions.md`（决定台账：日期/动作/可逆性/依据）
 - 改复审指令文案 → `src/instruction.ts`（改后必须同步 gate.test.mjs 的形态断言）
 - 实现/审查「UI 调参面板」时 → `docs/superpowers/plans/2026-09-29-review-gate-ui-panel.md`（已定设计、webServer 契约取证、M0/M1 边界与禁区）
+- review-gate 增强路线图（提示词精度 / ack v2 / receipts 统计 / 风险分层 / 独立 reviewer）→ `docs/superpowers/plans/2026-10-22-review-gate-enhancement-roadmap.md`
 - v2 设计背景（回执化 + diff 证据注入 + 多 session 隔离）→ `docs/superpowers/plans/2026-09-27-review-gate-v2.md`
 - handover/ 下其余报告是一次性历史，不路由；新报告只追加，不进本表。
 
@@ -44,7 +45,7 @@
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
 npm run build                            # tsc → sanity(lib 可导入) → tsc client → smoke 闸门 → 原子发布 lib/；改 src 后必跑
-npm test                                 # gate 91 例 + client-bundle 3 例（合计 94）；先 build 再 test，否则测旧码
+npm test                                 # gate 92 例 + client-bundle 3 例（合计 95）；先 build 再 test，否则测旧码
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
 dsh plugin --profile web add ~/dsh-review-gate               # 安装/更新到 profile
