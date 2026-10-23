@@ -58,8 +58,8 @@
 
 | Task | 交付 | 文件 | 验证 |
 |---|---|---|---|
-| 1 | `review_acknowledge` v2：`confidence` + `overall_correctness` / `overall_explanation` | `src/index.ts`、`README.md`、`test/gate.test.mjs` | 新测试 + 94 既有测试 |
-| 2 | micro/full 提示词加“审查纪律” | `src/instruction.ts`、`test/gate.test.mjs` | 新形态断言 + 94 既有测试 |
+| 1 | `review_acknowledge` v2：`confidence` + `overall_correctness` / `overall_explanation` | `src/index.ts`、`README.md`、`test/gate.test.mjs` | 新测试 + 既有全量（Batch 1 起点 95） |
+| 2 | micro/full 提示词加“审查纪律” | `src/instruction.ts`、`test/gate.test.mjs` | 新形态断言 + 既有全量（逐任务递增） |
 | 3 | `receipts-stats.mjs`：full/micro、零发现率、severity、均值 | `scripts/receipts-stats.mjs`、`test/receipts-stats.test.mjs`、`package.json`、`README.md` | 新测试 + `npm test` |
 
 ---
@@ -178,7 +178,7 @@ env -u LD_PRELOAD node --test --test-name-pattern 'ack v2' test/gate.test.mjs
 env -u LD_PRELOAD npm test
 ```
 
-Expected: 新测试 PASS；既有 94 例全绿。
+Expected: 新测试 PASS；既有全量绿（Batch 1 起点 95，逐任务递增）。
 
 - [ ] **Step 6: 更新 README**
 
@@ -275,7 +275,7 @@ env -u LD_PRELOAD node --test --test-name-pattern 'precision discipline' test/ga
 env -u LD_PRELOAD npm test
 ```
 
-Expected: 新测试 PASS；既有 94 例全绿。
+Expected: 新测试 PASS；既有全量绿（Batch 1 起点 95，逐任务递增）。
 
 - [ ] **Step 7: 提交**
 
@@ -545,7 +545,7 @@ export function shouldEscalateForPush(commands: readonly string[]): boolean {
 4. 是否能指定更便宜的 provider/model；成本上限。
 5. 失败/超时能否回退 inline，不破坏当前 ack 结算。
 
-**Spike 通过标准：** 一个独立脚本/临时插件能起一个 reviewer，返回一段 JSON，主插件能解析并在 30s 内超时回退；不污染现有 94 例。
+**Spike 通过标准：** 一个独立脚本/临时插件能起一个 reviewer，返回一段 JSON，主插件能解析并在 30s 内超时回退；不污染现有测试。
 
 ### 7.2 产品化形态（spike 通过后另写计划）
 
@@ -597,6 +597,8 @@ export function shouldEscalateForPush(commands: readonly string[]): boolean {
 4. **Batch 3 成本**：独立 reviewer 是否允许用更便宜的模型？单次复审的 token/费用上限是多少？
 5. **执行方式**：Batch 1 采用 subagent-driven（每个 Task 一个 fresh worker + 两阶段审查）还是 inline（本会话按 executing-plans 批量执行）？
 
+> 2026-10-23 用户批准 Batch 1 开工并选用 team 流水线（worker + closer）：第 1/2/5 项按计划默认执行（`overall_correctness` 命名、`scripts/receipts-stats.mjs`、worker+closer）；第 3/4 项随 Batch 2/3 继续待定。
+
 ---
 
 ## 11. 事实核对与数据基线（2026-10-23，本机实测）
@@ -609,7 +611,7 @@ export function shouldEscalateForPush(commands: readonly string[]): boolean {
 
 | 计划断言 | 实测 | 结论 |
 |---|---|---|
-| 既有 94 例测试 | `env -u LD_PRELOAD npm test` → tests 94 / pass 94 / fail 0 | 成立 |
+| 既有 94 例测试 | 2026-10-23 实测 tests 95 / pass 95 / fail 0（Batch 0 已加 1 例；计划写 94 是 Batch 0 前口径） | 成立，数字需订正 |
 | `FULL_TEXT` 缺三条精度纪律 | `src/instruction.ts` 中 `pre-existing` / `周边代码` / `No actionable findings found` / `严重度` 均 0 命中 | 成立，但见下方 nuance |
 | 指令要求「降 confidence」而回执无此字段 | `src/instruction.ts:37` 有「证据不足降 confidence 不否决」；`src/index.ts:628-632` 的 findings 描述只有 `{file, line?, severity, note}`；execute 类型 `findings?: unknown[]`（651-657） | 成立 |
 | `readReceiptStats` 只统计今日三项 + last | 实际函数体 `src/index.ts:392-429`（注释从 387 起）：today 仅 reviews / stopLoss / waived，last 仅 ts/outcome/action | 成立（行号较计划 388-425 漂移 3-4 行） |
@@ -672,18 +674,33 @@ globToRegExp('src/**')      → /^src\/.[^/]*$/
 
 ### 11.5 对 Batch 1 的执行结论
 
-三个 Task 的代码落点、类型、测试锚点全部存在，可按计划执行；**Batch 0（globstar 修复）已完成**，Batch 2 3a 解除阻塞，3b 仍受 11.4 阻塞。开工时改三处文案/口径即可：
+三个 Task 的代码落点、类型、测试锚点全部存在，可按计划执行；**Batch 0（globstar 修复）已完成**，Batch 2 3a 解除阻塞，3b 仍受 11.4 阻塞。开工时改四处文案/口径即可：
 
 1. Task 3 Step 6：README「Commands 节」→「开发」节；
 2. Task 3 的 `bySeverity`：加 `other` 桶（否则 46 条历史 finding 静默丢失）；
 3. §9 的 `avgDiffLines` / `avgChain`：注明「0 值成因」与「不是成本代理」。
+4. Step 3 的 findings 描述**保留「，仅此四值」**（`severity(info|minor|major|critical，仅此四值)`）：`decisions.md` 2026-10-10 的 severity 词表防漂移决定要求保留；计划文本漏写，实施已按 closer F1 恢复。
 
 **新增待拍板项（并入第 10 节）**：
 
 6. Qoder 文档（471 行）建议 findings 同时加 `confidence` 与 `priority`（或 severity→P0-P3 映射）；本计划明确不加 `priority`——是否确认放弃？
 7. `receipts-stats` 的默认统计窗口是否排除 2026-10-10 之前的 waived 数据（历史空 diff bug 污染）？
 
-### 11.6 Batch 3 spike 的接口事实（供 7.1 检查项直接使用）
+### 11.6 现存缺陷 C：`collectDiff` 不展开 `~`、相对路径按进程 cwd 解析（2026-10-23 实测）
+
+实测（`lib/state.js` 的 `collectDiff`，进程 cwd = `~/dsh-review-gate`）：
+
+- 绝对路径 → 正常返回 diff；
+- `~/dsh-review-gate/README.md` → 返回 `''`（向上找 `.git` 时把 `.` 当仓库根，git 把 `~/…` 当字面相对路径，无匹配 → 空 diff）；宿主进程 cwd = home 时 → 返回 `null`（找不到 `.git`，降级文案「非 git 环境」——2026-10-23 会话实测到该降级）；
+- 相对路径 `README.md` → 仅当进程 cwd 恰好是仓库时正常；宿主 cwd = home 时同样 `null`。
+
+根因：`dirname(first)` 直接用于向上找 `.git`，既不展开 `~`，也不以会话 workspace 为基准（宿主进程 cwd ≠ 会话 workspace）。AGENTS.md 要求路径用 `~/` 或相对路径，因此这是高频路径上的静默降级：证据注入与 auto 档基于 diff 行数的升格判定都拿不到数据。
+
+最小修法（候选）：入口先归一化路径——`~/` / `~` 前缀替换为 `join(homedir(), rest)`；相对路径需要会话 workspace（宿主若无此 API，先只修 `~`，相对路径记为已知缺口并写进 README 边界）。+1 条测试（同文件 tilde 与绝对路径产出同 diff）。
+
+---
+
+### 11.7 Batch 3 spike 的接口事实（供 7.1 检查项直接使用）
 
 - 服务：`ctx.subagents: SubagentRuntime`（cordis Context 模块增强），`dsh-acp` 的用法是 `this.ctx.get("subagents")`（惰性取，apply 期可能未就绪）。
 - 起一个 one-shot：`startActivation({ provider: 'spawn', label, request: { prompt, parent, signal, agentOptions? }, signal, delivery: 'caller' })` → `{ childId, messageId?, result: Promise<SubagentResult>, dispose() }`；`delivery: 'caller'` 表示结果只回调用方（父会话不收到通知消息；本地子仍进父 catalog）。
