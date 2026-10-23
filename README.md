@@ -207,6 +207,7 @@ npm install            # package-lock.json 权威
 npm run build          # tsc → lib/；改 src 后必跑
 npm test               # gate 单元 92 例（import lib/ —— 先 build 再 test，否则测旧码）
 node --test test/realloop.test.mjs   # 真时序 6 例（较慢，单独跑）
+node scripts/receipts-stats.mjs [receipts.jsonl]   # 今日 full/micro、零发现率、severity、均值
 ```
 
 验证顺序：改 src → build → gate + realloop 全绿 → 提交（含 lib/）→ 重启目标 profile → 真机验收（receipts.jsonl 留痕）。
