@@ -171,6 +171,7 @@ dsh plugin --profile web remove dsh-review-gate
 - bash 直写不走 FileSystem service（事件层不可见），命令模式启发式部分覆盖，有误报 / 漏报——只武装不阻断，方向保守（多触发一次复审无害）
 - 空 diff 有两种成因：改动已提交（回合内 commit）或已还原回 HEAD——两者都是真测量，故仍是豁免资格；未跟踪新文件已由全增 diff 覆盖，不再混入这一类
 - 取证只覆盖 `writeTools` 记录的路径 + 未跟踪同路径；bash 直写仍无路径可取证，此时降级为命令清单（文案已与「非 git 环境」分开）
+- 取证路径解析：`~/` 展开为 home（`~` 单写同义），绝对路径原样；相对路径按**宿主进程 cwd** 解析（不是会话 workspace）——会话 workspace ≠ 宿主 cwd 时可能降级成空 diff（假零净变更）或「非 git」，因此写 `~/` 或绝对路径才可靠
 - 写失败的工具调用（如 edit 报错）也计入改动——同为方向保守
 - `turn-stopping` 语义是「模型暂时不欠响应」，回合中间的停顿也会触发拦截，可能与进行中的工作交叠
 - 用户中断会清空 inbox，待执行的复审随之取消（用户干预优先）
@@ -195,7 +196,7 @@ dsh plugin --profile web remove dsh-review-gate
 │  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff
 │  └─ instruction.ts  复审指令文案：MICRO/FULL 两档五分区、reviewInstructionText、驱动消息
 ├─ test/
-│  ├─ gate.test.mjs      94 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
+│  ├─ gate.test.mjs      95 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
 │  ├─ client-bundle.test.mjs  3 例：已发布 client 产物执行级 smoke + 构建闸门拒绝形态
 │  ├─ receipts-stats.test.mjs 2 例：today 半开窗计数 + severity other 桶
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop：止损裁决 / ack 即结算与重放零拦截 / veto 语义 / 双源交叉断言）
@@ -207,7 +208,7 @@ dsh plugin --profile web remove dsh-review-gate
 ```sh
 npm install            # package-lock.json 权威
 npm run build          # tsc → lib/；改 src 后必跑
-npm test               # gate 94 + client-bundle 3 + receipts-stats 2（合计 99；import lib/ —— 先 build 再 test，否则测旧码）
+npm test               # gate 95 + client-bundle 3 + receipts-stats 2（合计 100；import lib/ —— 先 build 再 test，否则测旧码）
 node --test test/realloop.test.mjs   # 真时序 6 例（较慢，单独跑）
 node scripts/receipts-stats.mjs [receipts.jsonl]   # 今日 full/micro、零发现率、severity、均值
 ```

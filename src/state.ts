@@ -8,6 +8,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { buildDriverMessage } from './instruction.js'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join as joinPath } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -212,13 +213,25 @@ export function clearTurnWrites(state: GateState): void {
   state.bashCommands = []
 }
 
+// The host process cwd is not the session workspace, so a `~/…` path used to
+// reach git as a literal relative pathspec: when cwd happened to be a repo the
+// diff came back '' (false "zero net change"); otherwise null ("not a git
+// repo"). Expand `~` / `~/…` to the home directory before any path handling
+// (2026-10-24 fix). Absolute and relative paths keep their old behaviour.
+function expandTilde(p: string): string {
+  if (p === '~') return homedir()
+  if (p.startsWith('~/')) return joinPath(homedir(), p.slice(2))
+  return p
+}
+
 // Evidence for the review: the git diff of the touched files, PLUS any of those
 // files git does not track yet. '' = git worked but the turn has zero net change
 // vs HEAD (waiver-eligible); null = no git repo / no paths / git failure (no
 // measurement — conservative). Truncated to 300 lines so a huge change cannot
 // blow up the context.
 export async function collectDiff(files: readonly string[]): Promise<string | null> {
-  const first = files[0]
+  const resolved = files.map(expandTilde)
+  const first = resolved[0]
   if (!first) return null
   let dir = dirname(first)
   let root: string | null = null
@@ -235,7 +248,7 @@ export async function collectDiff(files: readonly string[]): Promise<string | nu
   try {
     const { stdout } = await execFileP(
       'git',
-      ['-C', root, 'diff', 'HEAD', '--', ...files],
+      ['-C', root, 'diff', 'HEAD', '--', ...resolved],
       { timeout: 2000, maxBuffer: 4 << 20 },
     )
     // `git diff` structurally never shows untracked files, so a newly created
@@ -245,7 +258,7 @@ export async function collectDiff(files: readonly string[]): Promise<string | nu
     // (2026-10-10 fix; audit proved 164/202 zero-measurement waivers were
     // brand-new files that were simply absent from HEAD).
     let text = stdout
-    for (const rel of await untrackedAmong(root, files)) {
+    for (const rel of await untrackedAmong(root, resolved)) {
       const added = await diffNewFile(joinPath(root, rel))
       if (added) text += (text && !text.endsWith('\n') ? '\n' : '') + added
     }

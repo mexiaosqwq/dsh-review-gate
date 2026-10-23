@@ -564,7 +564,9 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execFile as _execFile } from 'node:child_process'
 import { promisify as _promisify } from 'node:util'
-import { tmpdir as _tmpdir } from 'node:os'
+import { tmpdir as _tmpdir, homedir as _homedir } from 'node:os'
+import { relative as _relative } from 'node:path'
+import { mkdir as _mkdir, rm as _rm } from 'node:fs/promises'
 const runGit = _promisify(_execFile)
 
 async function mkdtempGitRepo() {
@@ -612,6 +614,52 @@ test('collectDiff: untracked new files are rendered as additions (2026-10-10 bli
   const mixed = await collectDiff([join(dir, 'a.txt'), fresh])
   assert.match(mixed, /\+new line/, 'tracked part present')
   assert.match(mixed, /\+line two/, 'untracked part appended')
+})
+
+test('collectDiff: ~/ paths expand to the home directory (2026-10-24 fix)', async () => {
+  const { collectDiff } = await import('../lib/index.js')
+  await _mkdir(join(_homedir(), 'tmp'), { recursive: true })
+  const dir = await mkdtemp(join(_homedir(), 'tmp', 'rg-tilde-'))
+  try {
+    await runGit('git', ['-C', dir, 'init'])
+    await runGit('git', ['-C', dir, 'config', 'user.email', 't@t'])
+    await runGit('git', ['-C', dir, 'config', 'user.name', 't'])
+    const file = join(dir, 'f.txt')
+    await writeFile(file, 'base\n')
+    await runGit('git', ['-C', dir, 'add', '.'])
+    await runGit('git', ['-C', dir, 'commit', '-m', 'base'])
+    await writeFile(file, 'base\nnew line\n')
+
+    const absDiff = await collectDiff([file])
+    const tildeDiff = await collectDiff([`~/${_relative(_homedir(), file)}`])
+    assert.ok(tildeDiff, 'a ~/ path must resolve to the repo instead of degrading to "" / null')
+    assert.match(tildeDiff, /\+new line/, 'the real change is in the evidence')
+    assert.equal(tildeDiff, absDiff, '~/ and absolute paths produce identical evidence')
+
+    // Bare `~` expands to home before resolution: whatever the host's home
+    // contains (repo or not), the evidence must equal the absolute-path call.
+    // Un-expanded, the old code walked up from '.' and graded the *process
+    // cwd's* repo, so this only matches by accident.
+    assert.deepEqual(
+      await collectDiff(['~']),
+      await collectDiff([_homedir()]),
+      'bare ~ is expanded to home before resolution (same evidence as the absolute path)',
+    )
+
+    const plain = await mkdtemp(join(_homedir(), 'tmp', 'rg-tilde-plain-'))
+    try {
+      await writeFile(join(plain, 'x.txt'), 'x')
+      assert.equal(
+        await collectDiff([`~/${_relative(_homedir(), join(plain, 'x.txt'))}`]),
+        null,
+        '~/ path outside any repo -> null (no measurement), not a false empty diff',
+      )
+    } finally {
+      await _rm(plain, { recursive: true, force: true })
+    }
+  } finally {
+    await _rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('assemble: diff containing {{...}} (JSX style) must not kill the turn', async () => {
