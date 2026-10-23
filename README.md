@@ -38,7 +38,7 @@ flowchart TD
 
 1. **写即武装**：监听 `tools/result`，write/edit 按 session 记录被写文件，每次写**即时重新分档**（`auto`：文件数、diff 行数、会话漂移、命中 `alwaysFullGlobs` → 全面；否则快扫）并置 pendingReview。bash 命令命中写模式（重定向 / `sed -i` / `mv` / `npm install`…）也会武装。
 2. **带证据的事中引导**：pendingReview 期间向 runtime-context 注入 `review-gate` 命名段——复审指令 + **本回合 git diff**（懒取证一次，300 行截断）+ bash 疑似写入命令清单。取证 = `git diff HEAD` 加**未跟踪新文件**（`git ls-files --others --exclude-standard` 检出后逐个 `git diff --no-index /dev/null <file>` 渲染成全增 diff，2026-10-10 修复：git diff 结构性不含未跟踪文件，新模块/新计划/新报告曾一律读成空 diff）。非 git 目录、无工具写入路径（仅 bash 武装）各有独立降级文案。不进对话流，客户端折叠渲染。
-3. **唯一完成信号**：模型完成复审后必须调用 `review_acknowledge` 工具提交结构化回执（action / files / findings / fixes_made / summary），落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志。每次新写会使旧回执失效——**新改动欠新复审**。审计行 `files` 字段双轨语义：`acknowledged` 行是模型自报清单（可能带 `~/` 形状、含未跟踪文件），`waived` / `stop_loss` 行才是闸门跟踪的原始集合——做数据分析只用后者。
+3. **唯一完成信号**：模型完成复审后必须调用 `review_acknowledge` 工具提交结构化回执（action / files / findings（file / line? / severity / confidence? / note）/ fixes_made / summary / overall_correctness? / overall_explanation?），落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志。每次新写会使旧回执失效——**新改动欠新复审**。审计行 `files` 字段双轨语义：`acknowledged` 行是模型自报清单（可能带 `~/` 形状、含未跟踪文件），`waived` / `stop_loss` 行才是闸门跟踪的原始集合——做数据分析只用后者。
 4. **拦截与止损**：回合将关时未回执 → steer 一条极简驱动消息把 agent 拉回；连续未回执最多 `maxChain` 次后止损放行，止损行为落 `stop_loss` 审计行，可统计复审放弃率。
 5. **防循环恢复**：用户新消息被认领时 chain 衰减 1——止损后每个用户回合保底恢复 1 轮复审；无写操作且无 bash 命中的回合把 chain 清零；`source.kind === 'review-gate'` 的自产驱动消息不参与衰减（防 steer 续步打穿止损）。
 
@@ -48,7 +48,7 @@ flowchart TD
 |---|---|
 | 分档复审税 | `auto` 按改动体量分档：快扫管小改，全面复审留给大改与会话漂移，不让复审税吃掉小任务 |
 | diff 证据注入 | 复审指令自带本回合 git diff（含未跟踪新文件的全增 diff），消除「凭对话记忆复审」的漂移 |
-| 结构化回执 | findings 数组（文件 / 行号 / severity / note）+ fixes_made + summary，逐行审计可回放 |
+| 结构化回执 | findings 数组（文件 / 行号 / severity / note）+ fixes_made + summary，逐行审计可回放。confidence 与 overall_correctness/overall_explanation 均为 optional；旧回执不受影响。 |
 | 收敛疲劳防护 | 连续 K 次全面复审零新发现 → 会话漂移不再升格全面（借鉴 Codex stop-after-no-new，改造为会话级状态机） |
 | 止损与恢复 | `maxChain` 止损 + 用户回合保底恢复 + source 门控，防死循环也防误伤 |
 | 项目陷阱注入 | `pitfallsFile` 指向项目陷阱清单，激活时读一次，全面复审时逐条对照（显式标注为不可信分析数据，防提示注入） |

@@ -686,6 +686,50 @@ test('ack: receipt lands in the audit log', async () => {
   }
 })
 
+// ---- Batch 1 Task 1: ack v2 — optional overall verdict + per-finding confidence ----
+
+test('ack v2: overall verdict and per-finding confidence persist', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const receiptDir = await fs.mkdtemp(join(_tmpdir(), 'rg-ack-v2-'))
+  apply(ctx, { ...baseConfig, receiptDir })
+  const ack = getAck(ctx)
+  // The description is the always-on severity vocabulary guard (decisions.md
+  // 2026-10-10): micro reviews carry no FULL_TEXT discipline, so the schema
+  // wording is the only place non-four-value severities get discouraged.
+  const findingsDesc = ack.parameters.properties.findings.description
+  assert.ok(
+    findingsDesc.includes('confidence?(0-1)') && findingsDesc.includes('仅此四值'),
+    'findings schema documents confidence?(0-1) and keeps the four-value severity guard',
+  )
+  const agent = { id: 'ack-v2', steer: () => {} }
+  ctx.emit('tools/result', { name: 'write', arguments: { file_path: '/a.ts' }, agent })
+  const finding = {
+    file: '/a.ts',
+    line: 7,
+    severity: 'major',
+    confidence: 0.62,
+    note: 'stale closure',
+  }
+  await ack.execute(
+    {
+      action: 'full',
+      files: ['/a.ts'],
+      findings: [finding],
+      overall_correctness: 'incorrect',
+      overall_explanation: 'one real bug, fixed',
+      fixes_made: true,
+      summary: 'fixed stale closure',
+    },
+    { agent },
+  )
+  const rec = JSON.parse((await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim())
+  assert.equal(rec.overall_correctness, 'incorrect')
+  assert.equal(rec.overall_explanation, 'one real bug, fixed')
+  assert.deepEqual(rec.findings, [finding])
+  await fs.rm(receiptDir, { recursive: true, force: true })
+})
+
 // ---- v2 Task 4: bash write-pattern heuristic (partial blind-spot cover) ----
 
 test('decideReview: bashWrites alone grades micro', async () => {
@@ -868,13 +912,26 @@ test('ack: clean-state call settles as an on-request receipt (2026-09-30 contrac
   const agent = { id: 'sc', steer: () => {} }
   // Write-free session: a user-asked review settles here — the receipt names
   // its author and source, so a stray ack is auditable rather than silent.
-  const result = await ack.execute({ action: 'micro', files: [], findings: [], fixes_made: false, summary: 'probe' }, { agent })
+  const result = await ack.execute(
+    {
+      action: 'micro',
+      files: [],
+      findings: [],
+      overall_correctness: 'correct',
+      overall_explanation: 'no defects',
+      fixes_made: false,
+      summary: 'probe',
+    },
+    { agent },
+  )
   assert.ok(result.includes('主动评审'), 'clean-state ack returns the on-request settlement hint')
   const lines = (await fs.readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')).trim().split('\n')
   assert.equal(lines.length, 1, 'exactly one receipt line')
   const row = JSON.parse(lines[0])
   assert.equal(row.source, 'on_request', 'receipt source = on_request')
   assert.equal(row.agentId, 'sc', 'receipt names its author')
+  assert.equal(row.overall_correctness, 'correct', 'optional overall verdict persists on-request')
+  assert.equal(row.overall_explanation, 'no defects', 'optional overall explanation persists on-request')
   await fs.rm(receiptDir, { recursive: true, force: true })
 })
 

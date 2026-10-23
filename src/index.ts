@@ -628,7 +628,16 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         findings: {
           type: 'array',
           description:
-            '发现的问题列表，每项 {file, line?, severity(info|minor|major|critical，仅此四值), note}',
+            '发现的问题列表，每项 {file, line?, severity(info|minor|major|critical，仅此四值), confidence?(0-1), note}',
+        },
+        overall_correctness: {
+          type: 'string',
+          enum: ['correct', 'incorrect'],
+          description: '可选：整体结论——patch 是否正确（correct/incorrect）',
+        },
+        overall_explanation: {
+          type: 'string',
+          description: '可选：整体结论的一句话解释',
         },
         fixes_made: {
           type: 'boolean',
@@ -652,6 +661,8 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           action: 'micro' | 'full'
           files: string[]
           findings?: unknown[]
+          overall_correctness?: 'correct' | 'incorrect'
+          overall_explanation?: string
           fixes_made: boolean
           summary: string
         }
@@ -673,6 +684,8 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
             findings: a.findings ?? [],
             fixes_made: a.fixes_made,
             summary: a.summary,
+            overall_correctness: a.overall_correctness,
+            overall_explanation: a.overall_explanation,
           })
           return `复审回执已登记（主动评审，${a.action}，${a.files.length} 文件，findings ${(a.findings ?? []).length} 条${a.fixes_made ? '，已修复' : ''}）。现在输出最终总结（含复审结论）。`
         }
@@ -705,6 +718,8 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           findings: a.findings ?? [],
           fixes_made: a.fixes_made,
           summary: a.summary,
+          overall_correctness: a.overall_correctness,
+          overall_explanation: a.overall_explanation,
           cost: {
             // Qoder-style transparency: what this review cost to demand.
             intercepts: state.chain,
