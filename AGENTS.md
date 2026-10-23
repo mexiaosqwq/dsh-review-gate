@@ -17,14 +17,14 @@
 │  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；本会话/全局作用域切换写 HTTP 面，会话写入带 slot 注入的 props.sessionId；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
 ├─ scripts/           构建链闸门三件：build-client.mjs（包装 __ModuleLoader__ 闭包 + staging→smoke→原子发布 lib/client.js）· client-smoke.mjs（共享 smoke 执行器，构建发布前与已发布产物测试同源）· sanity-lib.mjs（host lib 导入自检）+ receipts-stats.mjs（回执审计统计：summarize + CLI，today 半开窗、bySeverity 含 other 桶）
 ├─ test/
-│  ├─ gate.test.mjs      94 例单元（import ../lib/index.js —— 不 build 就测旧码）
+│  ├─ gate.test.mjs      95 例单元（import ../lib/index.js —— 不 build 就测旧码）
 │  ├─ client-bundle.test.mjs  3 例：已发布产物执行级 smoke ×2 + smoke 闸门拒绝形态 ×1（bare-name 漏表/未知外部/错 id/空 inject）
 │  ├─ receipts-stats.test.mjs  2 例：today 计数与半开窗边界 + other 桶（Σbuckets == findings）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
 ├─ lib/               tsc 产物，已入库（package main 指向 lib/，fresh clone 即可用；改 src 后重新 build 并一并提交）
 ├─ docs/
 │  ├─ superpowers/plans/  5 份计划：v2 回执化设计 · v4 realloop 测试配方 · overnight-v5 批次剧本 · ui-panel 调参面板 · 增强路线图
-│  └─ handover/           28 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账（合计 29 个文件）
+│  └─ handover/           30 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账（合计 31 个文件）
 ├─ cordis.patch.yml   bundle patch：- insert 一层 id: review-gate
 ├─ README.md          机制/配置/部署约定的权威现状描述（改机制必同步）
 └─ package.json / tsconfig.json   strict · NodeNext · ES2022；peerDeps = dsh-agent/fs/llm/system-prompt/tools + cordis + schemastery
@@ -46,7 +46,7 @@
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
 npm run build                            # tsc → sanity(lib 可导入) → tsc client → smoke 闸门 → 原子发布 lib/；改 src 后必跑
-npm test                                 # gate 94 例 + client-bundle 3 例 + receipts-stats 2 例（合计 99）；先 build 再 test，否则测旧码
+npm test                                 # gate 95 例 + client-bundle 3 例 + receipts-stats 2 例（合计 100）；先 build 再 test，否则测旧码
 node scripts/receipts-stats.mjs          # 回执审计统计（缺省读生产 receipts.jsonl；可传路径）
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤

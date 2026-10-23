@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **Status: Batch 1 已于 2026-10-23 实施完成（662d786 ack v2 / 1a634e0 提示词纪律 / 17987f0 receipts-stats）；Batch 2/3 仍为 proposal — 待用户批准，批准前不执行。**
+> **Status: Batch 1 已于 2026-10-23 实施完成（662d786 ack v2 / 1a634e0 提示词纪律 / 17987f0 receipts-stats）；Batch 0.5（collectDiff `~` 路径，2026-10-24）已实施；Batch 2/3 仍为 proposal — 待用户批准，批准前不执行。**
 >
 > 何时读：讨论/实施 review-gate 的提示词精度、回执 v2、审计统计、风险分层或独立 reviewer 时。Batch 1 已实施完成（记录与收尾口径见 §11）；Batch 2/3 只是方向与决策门，不是已批准任务。
 
@@ -697,6 +697,8 @@ globToRegExp('src/**')      → /^src\/.[^/]*$/
 根因：`dirname(first)` 直接用于向上找 `.git`，既不展开 `~`，也不以会话 workspace 为基准（宿主进程 cwd ≠ 会话 workspace）。AGENTS.md 要求路径用 `~/` 或相对路径，因此这是高频路径上的静默降级：证据注入与 auto 档基于 diff 行数的升格判定都拿不到数据。
 
 最小修法（候选）：入口先归一化路径——`~/` / `~` 前缀替换为 `join(homedir(), rest)`；相对路径需要会话 workspace（宿主若无此 API，先只修 `~`，相对路径记为已知缺口并写进 README 边界）。+1 条测试（同文件 tilde 与绝对路径产出同 diff）。
+
+**2026-10-24 已修复（Batch 0.5）**：`collectDiff` 入口 `expandTilde()` 归一化 `~` / `~/…`，root 探测、`git diff HEAD --`、`untrackedAmong` 三处都走归一化结果；`~/tmp` 真 git 仓库集成测试（`~/` 与绝对路径 diff 逐字节等价 + 裸 `~` 等价断言）入 npm test（合计 100）。相对路径仍按宿主进程 cwd 解析，已在 README 已知边界写明。
 
 ---
 
