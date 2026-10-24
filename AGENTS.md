@@ -52,6 +52,7 @@ node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑�
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
 dsh plugin --profile web add ~/dsh-review-gate               # 安装/更新到 profile
 dsh --profile web --dump-config          # 验证挂载：应出现 id: review-gate 层
+curl -s http://127.0.0.1:3080/plugin/review-gate/config   # 真机活配置（host 半区新增的键重启后才出现，缺键=没重载）
 ```
 
 **本机跑测试必须先卸 `/tmp` 垫片**：`env -u LD_PRELOAD npm test`（`node --test …` 同理）——否则凡 fixture 落在 tmp 域的用例全红，详见 Pitfalls。
