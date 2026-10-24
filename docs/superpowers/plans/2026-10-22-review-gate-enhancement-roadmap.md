@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **Status: Batch 1 已于 2026-10-23 实施完成（662d786 ack v2 / 1a634e0 提示词纪律 / 17987f0 receipts-stats）；Batch 0.5（collectDiff `~` 路径，2026-10-24）已实施；Batch 2/3 仍为 proposal — 待用户批准，批准前不执行。**
+> **Status: Batch 1 已于 2026-10-23 实施完成（662d786 ack v2 / 1a634e0 提示词纪律 / 17987f0 receipts-stats）；Batch 0.5（collectDiff `~` 路径，2026-10-24）已实施；Batch 2 · 3a（敏感路径推荐 + 回归测试，2026-10-24）已实施；3a 之后的 3b 与 Batch 3 仍为 proposal — 待用户批准，批准前不执行。**
 >
 > 何时读：讨论/实施 review-gate 的提示词精度、回执 v2、审计统计、风险分层或独立 reviewer 时。Batch 1 已实施完成（记录与收尾口径见 §11）；Batch 2/3 只是方向与决策门，不是已批准任务。
 
@@ -490,9 +490,9 @@ git commit -m "feat(stats): add receipts audit summary script"
 
 ---
 
-## 6. Batch 2（方向 3）：风险分层 + push 前升级（未批准，不执行）
+## 6. Batch 2（方向 3）：风险分层 + push 前升级（3a 已实施；3b 未批准，不执行）
 
-### 6.1 3a：敏感路径强制 full（零代码）
+### 6.1 3a：敏感路径强制 full（零代码，2026-10-24 已实施）
 
 `alwaysFullGlobs` 已经是现成能力。给用户的推荐配置（写进 README 配置示例，不新增键）：
 
@@ -506,6 +506,8 @@ alwaysFullGlobs:
 ```
 
 验收：命中这些路径的单文件改动 → `decideReview` 返回 `full`（现有测试已覆盖 `alwaysFullGlobs`，加一条真实路径样例即可）。
+
+**已实施（2026-10-24，`2611e44`）**：清单进 README 启动级示例（示例的 `mode` 同时由 `full` 改为 `auto`——固定 full 会让清单失去意义）；新增回归 1 例覆盖对照 + 五条 glob 正向 + 三条 near-miss；README 同时写明「命中不吃微量豁免，但 `chain` 到 `maxChain` 的止损回合仍会放行」。
 
 ### 6.2 3b：`escalateOnPush`（需用户拍板默认值）
 

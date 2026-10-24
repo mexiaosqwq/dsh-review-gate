@@ -908,6 +908,69 @@ test('alwaysFullGlobs: touching a core contract file forces full depth', async (
   )
 })
 
+test('alwaysFullGlobs: sensitive-path recommendation upgrades real paths (Batch 2 · 3a)', async () => {
+  const { decideReview } = await import('../lib/index.js')
+  // The sensitive-path subset of README's 启动级配置示例 (roadmap §6.1); if the
+  // recommendation drifts, this test is the thing that notices.
+  const recommended = [
+    '**/auth/**',
+    '**/payment/**',
+    '**/crypto/**',
+    '**/migrations/**',
+    '**/*.sql',
+  ]
+  const guarded = { ...baseConfig, alwaysFullGlobs: recommended }
+  const unguarded = { ...baseConfig, alwaysFullGlobs: [] }
+  const authPath = '/data/data/com.termux/files/home/proj/src/auth/login.ts'
+  const sqlPath = '/data/data/com.termux/files/home/proj/db/001_init.sql'
+
+  // Control first: the identical single-file turn grades micro without the
+  // globs, so the 'full' below is attributable to the sensitive-path rule and
+  // not to file count / drift.
+  assert.equal(
+    decideReview({ writeFiles: 1, paths: [authPath], chain: 0, config: unguarded }),
+    'micro',
+    'control: a single auth file is an ordinary micro turn without the glob',
+  )
+  assert.equal(
+    decideReview({ writeFiles: 1, paths: [authPath], chain: 0, config: guarded }),
+    'full',
+    '**/auth/** forces full on the real multi-level absolute path',
+  )
+  assert.equal(
+    decideReview({ writeFiles: 1, paths: [sqlPath], chain: 0, config: guarded }),
+    'full',
+    '**/*.sql (extension glob, no directory segment) also forces full',
+  )
+
+  // One positive assertion per recommended glob: a glob that quietly stops
+  // matching is exactly the regression this test exists to catch.
+  for (const [path, glob] of [
+    ['/p/src/payment/charge.ts', '**/payment/**'],
+    ['/p/src/crypto/sign.ts', '**/crypto/**'],
+    // Not .sql: that path would also match **/*.sql, so a broken migrations
+    // glob would still pass — this one is only satisfiable by **/migrations/**.
+    ['/p/db/migrations/runner.ts', '**/migrations/**'],
+  ]) {
+    assert.equal(
+      decideReview({ writeFiles: 1, paths: [path], chain: 0, config: guarded }),
+      'full',
+      `${glob} forces full on ${path}`,
+    )
+  }
+
+  // Near misses: a filename that merely starts with the sensitive word, and a
+  // doc that mentions it, must keep auto grading — otherwise every author/payment
+  // helper would drag the whole repo into full audits.
+  for (const near of ['/p/src/author.ts', '/p/src/payment-guide.ts', '/p/docs/auth.md']) {
+    assert.equal(
+      decideReview({ writeFiles: 1, paths: [near], chain: 0, config: guarded }),
+      'micro',
+      `${near} must keep auto grading (no false full)`,
+    )
+  }
+})
+
 test('globToRegExp: globstar spans multiple directory levels', async () => {
   const { globToRegExp, isIgnored } = await import('../lib/index.js')
   const cases = [
