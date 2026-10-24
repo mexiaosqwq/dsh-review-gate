@@ -37,7 +37,7 @@ flowchart TD
 ```
 
 1. **写即武装**：监听 `tools/result`，write/edit 按 session 记录被写文件，每次写**即时重新分档**（`auto`：文件数、diff 行数、会话漂移、命中 `alwaysFullGlobs` → 全面；否则快扫）并置 pendingReview。bash 命令命中写模式（重定向 / `sed -i` / `mv` / `npm install`…）也会武装。
-2. **带证据的事中引导**：pendingReview 期间向 runtime-context 注入 `review-gate` 命名段——复审指令 + **本回合 git diff**（懒取证一次，300 行截断）+ bash 疑似写入命令清单。取证 = `git diff HEAD` 加**未跟踪新文件**（`git ls-files --others --exclude-standard` 检出后逐个 `git diff --no-index /dev/null <file>` 渲染成全增 diff，2026-10-10 修复：git diff 结构性不含未跟踪文件，新模块/新计划/新报告曾一律读成空 diff）。非 git 目录、无工具写入路径（仅 bash 武装）各有独立降级文案。不进对话流，客户端折叠渲染。micro/full 两档都包含审查纪律：只报本回合 diff 引入的问题，pre-existing/纯风格/顺手大重构不报；无 actionable findings 明说，不硬凑。
+2. **带证据的事中引导**：pendingReview 期间向 runtime-context 注入 `review-gate` 命名段——复审指令 + **本回合 git diff**（懒取证一次，300 行截断）+ bash 疑似写入命令清单。取证 = `git diff HEAD` 加**未跟踪新文件**（`git ls-files --others --exclude-standard` 检出后逐个 `git diff --no-index /dev/null <file>` 渲染成全增 diff，2026-10-10 修复：git diff 结构性不含未跟踪文件，新模块/新计划/新报告曾一律读成空 diff）。非 git 目录、无工具写入路径（仅 bash 武装）各有独立降级文案。不进对话流，客户端折叠渲染。micro/full 两档都包含审查纪律：只报本回合 diff 引入的问题，pre-existing/纯风格/顺手大重构不报；无 actionable findings 明说，不硬凑。**push 类升级**（`escalateOnPush` 开启且 `auto` 档）：本回合 bash 命令命中 `git push` / `gh pr create` / `npm publish` → 此刻把 micro 升为 full，这一步排在「微量豁免」判定**之前**——否则「1 行改动 + git push」会被豁免掉，正是该升级要堵的洞；固定 `micro`/`full` 档不参与。
 3. **唯一完成信号**：模型完成复审后必须调用 `review_acknowledge` 工具提交结构化回执（action / files / findings（file / line? / severity / confidence? / note）/ fixes_made / summary / overall_correctness? / overall_explanation?），落 `~/.dsh/storages/review-gate/receipts.jsonl` 审计日志。每次新写会使旧回执失效——**新改动欠新复审**。审计行 `files` 字段双轨语义：`acknowledged` 行是模型自报清单（可能带 `~/` 形状、含未跟踪文件），`waived` / `stop_loss` 行才是闸门跟踪的原始集合——做数据分析只用后者。
 4. **拦截与止损**：回合将关时未回执 → steer 一条极简驱动消息把 agent 拉回；连续未回执最多 `maxChain` 次后止损放行，止损行为落 `stop_loss` 审计行，可统计复审放弃率。
 5. **防循环恢复**：用户新消息被认领时 chain 衰减 1——止损后每个用户回合保底恢复 1 轮复审；无写操作且无 bash 命中的回合把 chain 清零；`source.kind === 'review-gate'` 的自产驱动消息不参与衰减（防 steer 续步打穿止损）。
@@ -170,7 +170,7 @@ dsh plugin --profile web remove dsh-review-gate
 | `pitfallsFile` | （未设置） | 项目陷阱清单文件路径；插件激活时读一次，存在时全面复审指令追加「已知项目陷阱」节（含来源标注，按不可信分析数据对待） |
 | `receiptDir` | `~/.dsh/storages/review-gate` | 回执审计日志目录 |
 | `noNewReviewsBeforeDemotion` | `3` | 连续 K 次 full 复审零新发现后，会话漂移（milestone）不再升格全面复审（收敛疲劳防护；不影响基本分档与止损） |
-| `escalateOnPush` | `false` | 开启后把本回合的 bash 命令记入内存史（≤20 条 × 300 字符，结算即清），供 push 类升级判定使用；**不注入复审指令、不落盘、不产生回执**。默认关闭时零行为变化（升级判定本身尚未接入） |
+| `escalateOnPush` | `false` | 开启后把本回合的 bash 命令记入内存史（≤20 条 × 300 字符，结算即清；**不注入复审指令、不落盘、不产生回执**）；本回合命令命中 push 类（`git push` / `gh pr create` / `npm publish`，`--dry-run` 也算）时，**`auto` 档把 micro 升为 full 且不吃「微量豁免」**（升级判定先于豁免）；固定 `micro`/`full` 档不参与。默认关闭时连记录都不发生 = 零行为变化 |
 
 ## 已知边界（诚实清单）
 
@@ -204,7 +204,7 @@ dsh plugin --profile web remove dsh-review-gate
 │  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff
 │  └─ instruction.ts  复审指令文案：MICRO/FULL 两档五分区、reviewInstructionText、驱动消息
 ├─ test/
-│  ├─ gate.test.mjs      100 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
+│  ├─ gate.test.mjs      107 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
 │  ├─ client-bundle.test.mjs  3 例：已发布 client 产物执行级 smoke + 构建闸门拒绝形态
 │  ├─ receipts-stats.test.mjs 2 例：today 半开窗计数 + severity other 桶
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop：止损裁决 / ack 即结算与重放零拦截 / veto 语义 / 双源交叉断言）
@@ -216,7 +216,7 @@ dsh plugin --profile web remove dsh-review-gate
 ```sh
 npm install            # package-lock.json 权威
 npm run build          # tsc → lib/；改 src 后必跑
-npm test               # gate 100 + client-bundle 3 + receipts-stats 2（合计 105；import lib/ —— 先 build 再 test，否则测旧码）
+npm test               # gate 107 + client-bundle 3 + receipts-stats 2（合计 112；import lib/ —— 先 build 再 test，否则测旧码）
 node --test test/realloop.test.mjs   # 真时序 6 例（较慢，单独跑）
 node scripts/receipts-stats.mjs [receipts.jsonl]   # 今日 full/micro、零发现率、severity、均值
 ```

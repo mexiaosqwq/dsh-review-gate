@@ -37,6 +37,7 @@ import {
   decideReview,
   handleTurnStopping,
   recordPushHistory,
+  shouldEscalateForPush,
   shouldWaive,
   trackWrite,
 } from './state.js'
@@ -331,6 +332,21 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           }
           const cfg = cfgOf(context.agent?.id)
           const changed = p.diffText === null ? null : countChangedLines(p.diffText)
+          // Push escalation (Batch 2 · 3b-②, auto-only): a push-class command in
+          // this turn (recorded by 3b-① into pushHistory, which settlement
+          // clears — so this is the in-turn consumer) upgrades the micro review
+          // to full. It must run BEFORE the waiver: otherwise a one-line diff
+          // plus `git push` would still be waived, which is the hole this closes.
+          // Fixed micro/full modes are untouched (they also yield 'micro', so
+          // the cfg.mode guard — not the action alone — is what keeps them out).
+          if (
+            cfg.mode === 'auto' &&
+            cfg.escalateOnPush &&
+            p.action === 'micro' &&
+            shouldEscalateForPush(state.pushHistory)
+          ) {
+            p.action = 'full'
+          }
           // Trivial-write waiver (2026-09-30 user-approved proposal): in auto
           // mode a single tracked file with a tiny diff owes no review at all.
           // The probe above is the measurement — no extra git call. A waived

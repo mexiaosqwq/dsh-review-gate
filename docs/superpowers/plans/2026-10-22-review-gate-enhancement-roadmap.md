@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **Status: Batch 1 已于 2026-10-23 实施完成（662d786 ack v2 / 1a634e0 提示词纪律 / 17987f0 receipts-stats）；Batch 0.5（collectDiff `~` 路径，2026-10-24）已实施；Batch 2 · 3a（敏感路径推荐 + 回归测试，2026-10-24）已实施；3a 之后的 3b 与 Batch 3 仍为 proposal — 待用户批准，批准前不执行。**
+> **Status: Batch 1 已于 2026-10-23 实施完成（662d786 ack v2 / 1a634e0 提示词纪律 / 17987f0 receipts-stats）；Batch 0.5（collectDiff `~` 路径）、Batch 2 · 3a（敏感路径推荐 + 回归测试）、Batch 2 · 3b（`escalateOnPush` push 升级，2026-10-24）均已实施；仅剩 Batch 3（独立 reviewer）为 proposal — 待用户批准，批准前不执行。**
 >
 > 何时读：讨论/实施 review-gate 的提示词精度、回执 v2、审计统计、风险分层或独立 reviewer 时。Batch 1 已实施完成（记录与收尾口径见 §11）；Batch 2/3 只是方向与决策门，不是已批准任务。
 
@@ -490,7 +490,7 @@ git commit -m "feat(stats): add receipts audit summary script"
 
 ---
 
-## 6. Batch 2（方向 3）：风险分层 + push 前升级（3a 已实施；3b 未批准，不执行）
+## 6. Batch 2（方向 3）：风险分层 + push 前升级（3a / 3b 均已实施）
 
 ### 6.1 3a：敏感路径强制 full（零代码，2026-10-24 已实施）
 
@@ -509,7 +509,7 @@ alwaysFullGlobs:
 
 **已实施（2026-10-24，`2611e44`）**：清单进 README 启动级示例（示例的 `mode` 同时由 `full` 改为 `auto`——固定 full 会让清单失去意义）；新增回归 1 例覆盖对照 + 五条 glob 正向 + 三条 near-miss；README 同时写明「命中不吃微量豁免，但 `chain` 到 `maxChain` 的止损回合仍会放行」。
 
-### 6.2 3b：`escalateOnPush`（需用户拍板默认值）
+### 6.2 3b：`escalateOnPush`（2026-10-24 已实施：默认 false）
 
 **动机**：Qoder Security 把跨文件数据流放在 `git push` 前（L3）；我们目前只看文件数/行数，小改动 + push 可能只触发 micro。
 
@@ -531,6 +531,8 @@ export function shouldEscalateForPush(commands: readonly string[]): boolean {
 - 成本：`src/state.ts` + `src/index.ts`（Config、`review_gate_config` 工具、HTTP overlay 三处同键）+ `test/gate.test.mjs` + README/Config 文档。
 
 **决策门：** 用户确认默认值（false/true）与命令白名单；上线后看 `receipts-stats` 的 fullRatio 与误报反馈。
+
+**已实施（2026-10-24，`3fa3525` + 3b-②）**：用户拍板四默认值——`false` / 仅开启时记录（内存态 ≤20×300、结算即清、不注入不落盘）/ `--dry-run` 算 push / 仅 auto 档。落地两件：①记录通道 + `escalateOnPush` 键（schema/OVERLAY_KEYS/工具/HTTP 四入口）；②`shouldEscalateForPush` + assemble 在**微量豁免之前**把 micro 升 full（守卫 `cfg.mode==='auto'`——固定 micro 也产出 `micro`）。`PUSH_RE` 尾 fence 用 lookahead `(?=\s|$|[;&|)])`，`git push;` / `git push&&` 也命中。测试：纯函数正负例 + 五组行为（push→full / 关闭对照 / 非 push / 固定 micro / 先 waive 后 push 再武装）。
 
 ---
 

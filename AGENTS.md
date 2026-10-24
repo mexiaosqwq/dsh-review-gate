@@ -17,14 +17,14 @@
 │  └─ client/         网页面板 client 半区：composer chip + 力度弹窗（React；本会话/全局作用域切换写 HTTP 面，会话写入带 slot 注入的 props.sessionId；构建 = tsc -p tsconfig.client.json + scripts/build-client.mjs 包 __ModuleLoader__ 闭包；接缝 = conversation.input.left list slot，session-scoped）
 ├─ scripts/           构建链闸门三件：build-client.mjs（包装 __ModuleLoader__ 闭包 + staging→smoke→原子发布 lib/client.js）· client-smoke.mjs（共享 smoke 执行器，构建发布前与已发布产物测试同源）· sanity-lib.mjs（host lib 导入自检）+ receipts-stats.mjs（回执审计统计：summarize + CLI，today 半开窗、bySeverity 含 other 桶）
 ├─ test/
-│  ├─ gate.test.mjs      100 例单元（import ../lib/index.js —— 不 build 就测旧码）
+│  ├─ gate.test.mjs      107 例单元（import ../lib/index.js —— 不 build 就测旧码）
 │  ├─ client-bundle.test.mjs  3 例：已发布产物执行级 smoke ×2 + smoke 闸门拒绝形态 ×1（bare-name 漏表/未知外部/错 id/空 inject）
 │  ├─ receipts-stats.test.mjs  2 例：today 计数与半开窗边界 + other 桶（Σbuckets == findings）
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop；npm test 不含它）
 ├─ lib/               tsc 产物，已入库（package main 指向 lib/，fresh clone 即可用；改 src 后重新 build 并一并提交）
 ├─ docs/
 │  ├─ superpowers/plans/  5 份计划：v2 回执化设计 · v4 realloop 测试配方 · overnight-v5 批次剧本 · ui-panel 调参面板 · 增强路线图
-│  └─ handover/           32 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账（合计 33 个文件）
+│  └─ handover/           36 份一次性 worker/closer 报告（历史存档，不进路由）+ decisions.md 决定台账（合计 37 个文件）
 ├─ cordis.patch.yml   bundle patch：- insert 一层 id: review-gate
 ├─ README.md          机制/配置/部署约定的权威现状描述（改机制必同步）
 └─ package.json / tsconfig.json   strict · NodeNext · ES2022；peerDeps = dsh-agent/fs/llm/system-prompt/tools + cordis + schemastery
@@ -46,7 +46,7 @@
 ```sh
 npm install                              # 装依赖（package-lock.json 权威）
 npm run build                            # tsc → sanity(lib 可导入) → tsc client → smoke 闸门 → 原子发布 lib/；改 src 后必跑
-npm test                                 # gate 100 例 + client-bundle 3 例 + receipts-stats 2 例（合计 105）；先 build 再 test，否则测旧码
+npm test                                 # gate 107 例 + client-bundle 3 例 + receipts-stats 2 例（合计 112）；先 build 再 test，否则测旧码
 node scripts/receipts-stats.mjs          # 回执审计统计（缺省读生产 receipts.jsonl；可传路径）
 node --test test/realloop.test.mjs       # 真时序 6 例（较慢，单独跑）
 node --test --test-name-pattern '<子串>' test/gate.test.mjs   # 单测过滤
@@ -65,7 +65,7 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 事件流（监听器全部在 index.ts 的 `ctx.effect` 内 `yield ctx.on(...)` 注册）：
 
 1. `tools/result` → trackWrite（按 writeTools 清单识别，读 `args.file_path`）+ bash 写模式启发式（BASH_WRITE_RE，宁多触发不漏触发）→ gradeAndArm：decideReview 即时分档置 pendingReview，每次新写使旧回执失效（新改动欠新复审）
-2. `system-prompt/assemble` → **常驻**注入 `review-gate-usage` 段（触发词契约：用户说「审查/复审/review」→ 按会话档位执行本插件协议 + ack 回执）+ pendingReview 期间注入 `review-gate` 命名段：指令文本 + 懒取证 git diff（arm 后首次 collectDiff，300 行截断）+ bash 命令清单；取证 = `git diff HEAD` **加未跟踪新文件的全增 diff**（`ls-files --others --exclude-standard` + `diff --no-index /dev/null`），降级文案三态（`''` 空 diff / `null`+无 paths=仅 bash 武装 / `null`+有 paths=非 git）；micro 档 diff 行数 ≥ fullAtLines 现场升格 full，**auto 档单文件微量 diff < exemptBelowLines（默认 10，0=关）直接免审**（shouldWaive 在同一探测点判定，落 `outcome:waived` 审计行且不带 action 键——不虚增今日复审计数）。两段文本都必须过 braceGuard。**不进对话流**——自定义 MessageSourceMap kind `'review-gate'`，client 按 source.kind !== 'user' 折叠渲染
+2. `system-prompt/assemble` → **常驻**注入 `review-gate-usage` 段（触发词契约：用户说「审查/复审/review」→ 按会话档位执行本插件协议 + ack 回执）+ pendingReview 期间注入 `review-gate` 命名段：指令文本 + 懒取证 git diff（arm 后首次 collectDiff，300 行截断）+ bash 命令清单；取证 = `git diff HEAD` **加未跟踪新文件的全增 diff**（`ls-files --others --exclude-standard` + `diff --no-index /dev/null`），降级文案三态（`''` 空 diff / `null`+无 paths=仅 bash 武装 / `null`+有 paths=非 git）；micro 档 diff 行数 ≥ fullAtLines 现场升格 full，**auto 档单文件微量 diff < exemptBelowLines（默认 10，0=关）直接免审**（`escalateOnPush` 开启且本回合命中 push 类命令时先升 full 再判豁免，这类回合因此不豁免；shouldWaive 在同一探测点判定，落 `outcome:waived` 审计行且不带 action 键——不虚增今日复审计数）。两段文本都必须过 braceGuard。**不进对话流**——自定义 MessageSourceMap kind `'review-gate'`，client 按 source.kind !== 'user' 折叠渲染
 3. `agent/turn-stopping` → handleTurnStopping：已 ack → 结算放行（full 结算 sessionFiles 漂移）；未 ack 且 chain < maxChain → steer 驱动消息（source.kind='review-gate'），chain+1，pendingReview 保留；chain 到顶 → 止损放行 + stop_loss 审计行
 4. `review_acknowledge` 工具（apply 顶层注册）→ 唯一结算点：acknowledged=true、审计行、pendingReview=null、clearTurnWrites、chain=0；ack 后收到客户端重放 → 走残渣清理分支提示直接结案，不重记；**无 pendingReview（或零写入会话连 state 都没有）→ 按 `source: on_request` 落回执**（2026-09-30 触发词契约的主动评审结算——用户说「审查」而闸门未拦时，回执也要落账，游离 ack 因此可审计而非静默）。
 5. `agent/inbox/claimed` → chain 衰减 1（止损后每个用户回合保底恢复 1 轮复审）；**source-gate**：kind==='review-gate' 的自产 driver 消息跳过衰减
@@ -82,7 +82,7 @@ dsh --profile web --dump-config          # 验证挂载：应出现 id: review-g
 - 工具注册必须在 apply() 顶层，不能放进 ctx.effect generator——同样报 without inject（官方工具插件均此形态）。
 - 头部 `import type {} from '@deepseek-ai/dsh-agent'` 等 type-only 导入不可删：它们把宿主事件名与 `context.agent` 扩展注入 cordis 类型，删了门静默失活（assemble_degraded 回执使降级可观测）。
 - 复审指令只走 runtime-context 注入，不出现在对话流；steer 消息必须带 `source.kind: 'review-gate'`（既是 client 折叠渲染开关，也是 claimed 衰减的 source 门）。
-- Config 键改动 → 同步 src/index.ts 的 Config schema + README 配置表。schema 是权威。
+- Config 键改动 → 同步五处：`src/index.ts` Config schema、`src/state.ts` 的 `ReviewGateConfig`、`src/config-live.ts` 的 `OVERLAY_KEYS`、`review_gate_config` 的 set 参数 schema + args 类型、`README.md`（配置表 + 运行时键清单）；HTTP 面由 `pickOverlay`+`validatePatch` 自动跟进，不用另改。必须落一条 **set round-trip 断言**（漏登 `OVERLAY_KEYS` 时新键会被静默丢弃、set 只报「无可用键」，只有实调 set 才抓得住）。schema 是权威。
 - 用户拍板的决定记入 `docs/handover/decisions.md`（决定台账），不散落在会话/报告正文里。
 
 ## Pitfalls

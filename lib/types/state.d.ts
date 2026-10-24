@@ -97,5 +97,7 @@ export declare function clearTurnWrites(state: GateState): void;
  * keeps the newest 20 (oldest shifted out) so a chatty session cannot grow it.
  */
 export declare function recordPushHistory(history: string[], command: unknown): void;
+/** True when any recorded bash command looks like a push-class action. */
+export declare function shouldEscalateForPush(commands: readonly string[]): boolean;
 export declare function collectDiff(files: readonly string[]): Promise<string | null>;
 export declare function handleTurnStopping(state: GateState, steer: (message: UserMessage) => void, config: ReviewGateConfig): ReviewAction;

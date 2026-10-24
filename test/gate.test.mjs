@@ -853,6 +853,35 @@ test('recordPushHistory: records, truncates at 300 chars, keeps the newest 20', 
   assert.deepEqual(untouched, ['keep'], 'non-strings and empty strings are ignored')
 })
 
+test('shouldEscalateForPush: git push / gh pr create / npm publish match, noise does not', async () => {
+  const { shouldEscalateForPush } = await import('../lib/index.js')
+  for (const hit of [
+    'git push',
+    'git push origin main',
+    'git push --force-with-lease',
+    'git push --dry-run', // dry-run still escalates: 宁多审 (user ruling)
+    'gh pr create --title x --body y',
+    'npm publish --access public',
+    'cd ~/repo && git push origin main',
+    'cd x\ngit push origin main', // newline is \s too
+    'git push; echo done', // shell separator, not whitespace
+    'git push&& echo done',
+    'git push && echo done',
+    'npm publish; echo done',
+  ]) {
+    assert.equal(shouldEscalateForPush([hit]), true, `escalates: ${JSON.stringify(hit)}`)
+  }
+  for (const miss of ['git status', 'echo hi', 'npm install', 'gh pr list', 'cat git push.txt', '']) {
+    assert.equal(shouldEscalateForPush([miss]), false, `stays micro: ${JSON.stringify(miss)}`)
+  }
+  assert.equal(shouldEscalateForPush([]), false, 'empty history escalates nothing')
+  assert.equal(
+    shouldEscalateForPush(['ls -la', 'git push origin main', 'npm test']),
+    true,
+    'any matching command in the history is enough',
+  )
+})
+
 test('clearTurnWrites: settles pushHistory together with the turn writes', async () => {
   const { createState, clearTurnWrites, recordPushHistory } = await import('../lib/index.js')
   const state = createState()
@@ -1728,6 +1757,119 @@ test('assemble: auto + single tiny file waives the review (no section, waived re
   } finally {
     await fs.rm(receiptDir, { recursive: true, force: true })
   }
+})
+
+// ---- Batch 2 · 3b-②: push-class commands escalate auto micro -> full ----
+
+// One armed auto turn end-to-end: optional bash commands, then a single-file
+// 1-line edit (the tiny diff the waiver would normally swallow), then assemble.
+// Distinct agent ids keep the per-session state disjoint across the cases.
+async function assemblePushTurn({ cfg, agentId, commands = [] }) {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const dir = await mkdtempGitRepo()
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-push-'))
+  apply(ctx, { ...baseConfig, exemptBelowLines: 10, receiptDir, ...cfg })
+  const agent = { id: agentId, steer: () => {} }
+  for (const command of commands) {
+    ctx.emit('tools/result', { name: 'bash', arguments: { command }, agent })
+  }
+  ctx.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent })
+  const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+  const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+  const out = await listener(assembly, { agent }, async () => assembly)
+  await new Promise((r) => setTimeout(r, 25)) // settle the fire-and-forget receipt
+  const receipt = await fs
+    .readFile(join(receiptDir, 'receipts.jsonl'), 'utf8')
+    .then((raw) => JSON.parse(raw), () => null)
+  await fs.rm(receiptDir, { recursive: true, force: true })
+  await fs.rm(dir, { recursive: true, force: true })
+  return { section: out.contexts.find((c) => c.name === 'review-gate'), receipt }
+}
+
+test('assemble: push-class command escalates an auto micro review to full (not waived)', async () => {
+  const { section, receipt } = await assemblePushTurn({
+    cfg: { escalateOnPush: true },
+    agentId: 'push-a',
+    commands: ['git push origin main'],
+  })
+  assert.ok(section, 'a push turn owes a review even though the diff is one line')
+  assert.ok(section.text.includes('全面复审'), 'escalated to the full instruction')
+  assert.equal(section.text.includes('L1 快扫'), false, 'not the micro instruction')
+  assert.equal(receipt, null, 'the tiny diff is not waived once push escalation fired')
+})
+
+test('assemble: without escalateOnPush the same push turn stays waived (control)', async () => {
+  const { section, receipt } = await assemblePushTurn({
+    cfg: { escalateOnPush: false },
+    agentId: 'push-b',
+    commands: ['git push origin main'],
+  })
+  assert.equal(section, undefined, 'recording is opt-in: default off leaves the waiver intact')
+  assert.equal(receipt?.outcome, 'waived', 'and the waiver is still auditable')
+  assert.equal(receipt?.changedLines, 1)
+})
+
+test('assemble: a non-push command does not escalate', async () => {
+  const { section, receipt } = await assemblePushTurn({
+    cfg: { escalateOnPush: true },
+    agentId: 'push-c',
+    commands: ['ls -la'],
+  })
+  assert.equal(section, undefined, 'only push-class commands escalate')
+  assert.equal(receipt?.outcome, 'waived')
+})
+
+test('assemble: a shell-separated push (git push; ...) still escalates', async () => {
+  const { section, receipt } = await assemblePushTurn({
+    cfg: { escalateOnPush: true },
+    agentId: 'push-e',
+    commands: ['git push; echo done'],
+  })
+  assert.ok(section, 'the trailing separator must not hide the push')
+  assert.ok(section.text.includes('全面复审'), 'full tier, not waived')
+  assert.equal(receipt, null, 'no waiver once the push is recognised')
+})
+
+test('assemble: a push arriving after the waiver re-arms a full review', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  const dir = await mkdtempGitRepo()
+  const receiptDir = await mkdtemp(join(_tmpdir(), 'rg-push-seq-'))
+  try {
+    apply(ctx, { ...baseConfig, exemptBelowLines: 10, receiptDir, escalateOnPush: true })
+    const agent = { id: 'push-seq', steer: () => {} }
+    const listener = ctx.listeners.get('system-prompt/assemble')?.[0]
+    const assembly = () => ({ contexts: [], sections: [], tools: [], variables: {} })
+    ctx.emit('tools/result', { name: 'edit', arguments: { file_path: join(dir, 'a.txt') }, agent })
+    const first = await listener(assembly(), { agent }, async () => assembly())
+    assert.equal(
+      first.contexts.find((c) => c.name === 'review-gate'),
+      undefined,
+      'the tiny diff alone is still waived (control for the second half)',
+    )
+    // The push lands *after* the waiver probe, so this half proves the bash
+    // event re-arms (gradeAndArm) and the escalation then beats the waiver.
+    ctx.emit('tools/result', { name: 'bash', arguments: { command: 'git push origin main' }, agent })
+    const second = await listener(assembly(), { agent }, async () => assembly())
+    const section = second.contexts.find((c) => c.name === 'review-gate')
+    assert.ok(section, 'a late push must not slip through the already-waived turn')
+    assert.ok(section.text.includes('全面复审'), 'and it comes back as full')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('assemble: fixed micro mode is never escalated by a push command', async () => {
+  const { section } = await assemblePushTurn({
+    cfg: { mode: 'micro', escalateOnPush: true },
+    agentId: 'push-d',
+    commands: ['git push origin main'],
+  })
+  assert.ok(section, 'fixed micro still owes its micro review')
+  assert.ok(section.text.includes('L1 快扫'), 'stays micro — the escalation is auto-only')
+  assert.equal(section.text.includes('全面复审'), false)
 })
 
 test('assemble: empty diff waives in auto; fixed micro and non-git keep honest labels', async () => {
