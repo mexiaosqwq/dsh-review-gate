@@ -102,7 +102,7 @@ dsh --profile web --dump-config   # 应出现 id: review-gate 层
 - **对话**：让 agent 调 `review_gate_config` 工具——「把审查调到 full」「复审力度调轻一点」「恢复默认」，get/set/reset 即时生效
 - **HTTP**（面板后端，也可 curl）：`GET /plugin/review-gate/config` 读（`?sessionId=` 附带返回该会话生效完整配置 `effective`、活会话计数 `states`、今日回执统计 `receipts`）；`POST` 同路径提交部分键即改（未知键忽略并在响应 `ignored` 列出；glob 键含 `?` 直接 400——`globToRegExp` 对 `?` 静默错译，三入口同守卫）；`POST /plugin/review-gate/config/reset` 恢复启动时配置
 
-运行时可调键 = `mode / fullAtFiles / fullAtLines / exemptBelowLines / milestoneAtFiles / maxChain / noNewReviewsBeforeDemotion / alwaysFullGlobs / ignoreGlobs`（HTTP 面额外收 `writeTools`）。改动持久化到 `receiptDir` 下的 `config.json` 覆盖层，重启后依然生效。
+运行时可调键 = `mode / fullAtFiles / fullAtLines / exemptBelowLines / milestoneAtFiles / maxChain / noNewReviewsBeforeDemotion / alwaysFullGlobs / ignoreGlobs / escalateOnPush`（HTTP 面额外收 `writeTools`）。改动持久化到 `receiptDir` 下的 `config.json` 覆盖层，重启后依然生效。
 
 **启动级（改文件 + 重启 profile）**——只用于路径键（`pitfallsFile` / `receiptDir`，运行时面刻意不收它们）或想把默认值写进组合文件：在 **profile 层 patch**（`~/.dsh/profiles/<profile>/cordis.patch.yml`）追加一段针对 `id: review-gate` 的覆盖行：
 
@@ -170,6 +170,7 @@ dsh plugin --profile web remove dsh-review-gate
 | `pitfallsFile` | （未设置） | 项目陷阱清单文件路径；插件激活时读一次，存在时全面复审指令追加「已知项目陷阱」节（含来源标注，按不可信分析数据对待） |
 | `receiptDir` | `~/.dsh/storages/review-gate` | 回执审计日志目录 |
 | `noNewReviewsBeforeDemotion` | `3` | 连续 K 次 full 复审零新发现后，会话漂移（milestone）不再升格全面复审（收敛疲劳防护；不影响基本分档与止损） |
+| `escalateOnPush` | `false` | 开启后把本回合的 bash 命令记入内存史（≤20 条 × 300 字符，结算即清），供 push 类升级判定使用；**不注入复审指令、不落盘、不产生回执**。默认关闭时零行为变化（升级判定本身尚未接入） |
 
 ## 已知边界（诚实清单）
 
@@ -203,7 +204,7 @@ dsh plugin --profile web remove dsh-review-gate
 │  ├─ state.ts        状态机核心：decideReview 分档 / handleTurnStopping 拦截止损 / trackWrite / collectDiff
 │  └─ instruction.ts  复审指令文案：MICRO/FULL 两档五分区、reviewInstructionText、驱动消息
 ├─ test/
-│  ├─ gate.test.mjs      96 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
+│  ├─ gate.test.mjs      100 例单元（分档 / 写跟踪 / 注入形态 / 回执六路径 / 止损衰减 / 多 agent 隔离 / bash 启发式 / 疲劳防护 / receipts 终态）
 │  ├─ client-bundle.test.mjs  3 例：已发布 client 产物执行级 smoke + 构建闸门拒绝形态
 │  ├─ receipts-stats.test.mjs 2 例：today 半开窗计数 + severity other 桶
 │  └─ realloop.test.mjs  6 例真时序（dsh-agent-loop-testkit 驱动真实 AgentLoop：止损裁决 / ack 即结算与重放零拦截 / veto 语义 / 双源交叉断言）
@@ -215,7 +216,7 @@ dsh plugin --profile web remove dsh-review-gate
 ```sh
 npm install            # package-lock.json 权威
 npm run build          # tsc → lib/；改 src 后必跑
-npm test               # gate 96 + client-bundle 3 + receipts-stats 2（合计 101；import lib/ —— 先 build 再 test，否则测旧码）
+npm test               # gate 100 + client-bundle 3 + receipts-stats 2（合计 105；import lib/ —— 先 build 再 test，否则测旧码）
 node --test test/realloop.test.mjs   # 真时序 6 例（较慢，单独跑）
 node scripts/receipts-stats.mjs [receipts.jsonl]   # 今日 full/micro、零发现率、severity、均值
 ```

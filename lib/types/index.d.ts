@@ -44,6 +44,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     writeTools: z<string[], string[], "defined">;
     ignoreGlobs: z<string[], string[], "defined">;
     alwaysFullGlobs: z<string[], string[], "defined">;
+    escalateOnPush: z<boolean, boolean, "defined">;
     pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
     noNewReviewsBeforeDemotion: z<number, number, "defined">;
@@ -57,6 +58,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     writeTools: z<string[], string[], "defined">;
     ignoreGlobs: z<string[], string[], "defined">;
     alwaysFullGlobs: z<string[], string[], "defined">;
+    escalateOnPush: z<boolean, boolean, "defined">;
     pitfallsFile: z<string, string, "plain">;
     receiptDir: z<string, string, "plain">;
     noNewReviewsBeforeDemotion: z<number, number, "defined">;

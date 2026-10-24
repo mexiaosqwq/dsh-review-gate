@@ -36,6 +36,7 @@ import {
   createState,
   decideReview,
   handleTurnStopping,
+  recordPushHistory,
   shouldWaive,
   trackWrite,
 } from './state.js'
@@ -69,6 +70,10 @@ export const Config = z.object({
   writeTools: z.array(z.string()).default(['write', 'edit']),
   ignoreGlobs: z.array(z.string()).default([]),
   alwaysFullGlobs: z.array(z.string()).default([]),
+  // Batch 2 · 3b-①: opt-in recording of this turn's bash commands, used by the
+  // (separately landed) push-escalation rule. Default false keeps today's
+  // behaviour byte-identical; the history itself never reaches the instruction.
+  escalateOnPush: z.boolean().default(false),
   pitfallsFile: z.string().required(false),
   receiptDir: z.string().required(false),
   noNewReviewsBeforeDemotion: z.number().min(0).default(3),
@@ -205,6 +210,12 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         if (typeof command === 'string' && BASH_WRITE_RE.test(command)) {
           state.bashWrites = true
           if (state.bashCommands.length < 5) state.bashCommands.push(command)
+        }
+        // Batch 2 · 3b-① recording channel: opt-in, memory-only, and
+        // deliberately separate from bashCommands (which is injected into the
+        // review instruction). Nothing here arms a review or writes a receipt.
+        if (cfg.escalateOnPush && typeof command === 'string') {
+          recordPushHistory(state.pushHistory, command)
         }
       }
       // Milestone drift: only a NEW path counts (the fs-intent listener may
@@ -776,6 +787,11 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
         noNewReviewsBeforeDemotion: { type: 'number', description: 'set 时可选：连续零发现降格疲劳阈值' },
         alwaysFullGlobs: { type: 'array', description: 'set 时可选：命中即强制全面复审的 glob 清单' },
         ignoreGlobs: { type: 'array', description: 'set 时可选：豁免复审触发的 glob 清单' },
+        escalateOnPush: {
+          type: 'boolean',
+          description:
+            'set 时可选：开启后记录本回合 bash 命令用于 push 类升级判定（默认 false；内存态 ≤20 条×300 字符，结算即清，不注入指令）',
+        },
       },
       output: {
         schema: { type: 'json' },
@@ -794,6 +810,7 @@ export function apply(ctx: Context, config: ReviewGateConfig): void {
           noNewReviewsBeforeDemotion?: number
           alwaysFullGlobs?: string[]
           ignoreGlobs?: string[]
+          escalateOnPush?: boolean
         }
         const agentId = exec?.agent?.id
         // Default scope: global — mirrors the HTTP API

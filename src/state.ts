@@ -40,6 +40,11 @@ export interface ReviewGateConfig {
   readonly noNewReviewsBeforeDemotion?: number
   /** auto mode only: a single-file turn whose diff has fewer changed lines than this owes no review at all (0 disables; default 10). */
   readonly exemptBelowLines?: number
+  /**
+   * Opt-in recording of this turn's bash commands for the push-escalation lane
+   * (Batch 2 · 3b-①). Default false leaves every existing behaviour untouched.
+   */
+  readonly escalateOnPush?: boolean
 }
 
 export type ReviewAction = 'skip' | 'micro' | 'full'
@@ -176,6 +181,13 @@ export interface GateState {
   bashWrites: boolean
   /** The matched bash commands (<= 5), shown to the reviewing model. */
   bashCommands: string[]
+  /**
+   * Bash commands recorded for the optional push-escalation lane (Batch 2 ·
+   * 3b-①): newest 20, each truncated to 300 chars. Only filled while
+   * `escalateOnPush` is on; memory-only, never persisted, never injected into
+   * the instruction (unlike bashCommands), cleared on settlement.
+   */
+  pushHistory: string[]
   /** While set, the assemble listener injects the review instruction as a runtime-context section. */
   pendingReview: {
     action: 'micro' | 'full'
@@ -198,6 +210,7 @@ export function createState(): GateState {
     sessionFiles: 0,
     bashWrites: false,
     bashCommands: [],
+    pushHistory: [],
     pendingReview: null,
     acknowledged: false,
     noNewReviews: 0,
@@ -211,6 +224,19 @@ export function clearTurnWrites(state: GateState): void {
   state.files.clear()
   state.bashWrites = false
   state.bashCommands = []
+  state.pushHistory = []
+}
+
+/**
+ * Record one bash command for the push-escalation lane (Batch 2 · 3b-①).
+ * Pure channel, no decision: the escalation rule lands separately. Non-string
+ * and empty input is ignored; each entry is capped at 300 chars and the list
+ * keeps the newest 20 (oldest shifted out) so a chatty session cannot grow it.
+ */
+export function recordPushHistory(history: string[], command: unknown): void {
+  if (typeof command !== 'string' || command === '') return
+  history.push(command.length > 300 ? command.slice(0, 300) : command)
+  if (history.length > 20) history.shift()
 }
 
 // The host process cwd is not the session workspace, so a `~/…` path used to

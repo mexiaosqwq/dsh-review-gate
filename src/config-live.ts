@@ -26,6 +26,7 @@ export const OVERLAY_KEYS = [
   'ignoreGlobs',
   'alwaysFullGlobs',
   'noNewReviewsBeforeDemotion',
+  'escalateOnPush',
 ] as const
 
 export function overlayPath(dir: string): string {

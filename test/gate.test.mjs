@@ -829,6 +829,68 @@ test('apply: harmless bash command does not arm the gate', async () => {
   assert.equal(steered.length, 0, 'cat alone never arms the gate')
 })
 
+// ---- Batch 2 · 3b-①: push-command recording channel (escalateOnPush) ----
+
+test('recordPushHistory: records, truncates at 300 chars, keeps the newest 20', async () => {
+  const { recordPushHistory } = await import('../lib/index.js')
+  const history = []
+  recordPushHistory(history, 'git push origin main')
+  assert.deepEqual(history, ['git push origin main'], 'ordinary command recorded verbatim')
+
+  recordPushHistory(history, 'x'.repeat(400))
+  assert.equal(history[1].length, 300, 'over-long commands truncate to 300 chars')
+  assert.equal(history[1], 'x'.repeat(300), 'truncation keeps the head, not the tail')
+
+  for (let i = 0; i < 25; i++) recordPushHistory(history, `git push --force-with-lease #${i}`)
+  assert.equal(history.length, 20, 'history is capped at 20 entries')
+  assert.equal(history.at(-1), 'git push --force-with-lease #24', 'newest entry is kept')
+  assert.equal(history[0], 'git push --force-with-lease #5', 'oldest entries shift out first')
+
+  const untouched = ['keep']
+  for (const bad of [undefined, null, 42, { command: 'git push' }, [], '']) {
+    recordPushHistory(untouched, bad)
+  }
+  assert.deepEqual(untouched, ['keep'], 'non-strings and empty strings are ignored')
+})
+
+test('clearTurnWrites: settles pushHistory together with the turn writes', async () => {
+  const { createState, clearTurnWrites, recordPushHistory } = await import('../lib/index.js')
+  const state = createState()
+  assert.deepEqual(state.pushHistory, [], 'fresh state starts empty')
+  recordPushHistory(state.pushHistory, 'git push origin main')
+  state.files.add('/p/a.ts')
+  clearTurnWrites(state)
+  assert.deepEqual(state.pushHistory, [], 'settlement clears the recorded commands')
+  assert.equal(state.files.size, 0, 'turn writes clear as before')
+})
+
+// Regression guard, not a driver: every assertion here already passes on the
+// pre-change lib (the channel is new, so nothing could leak yet). It exists to
+// keep future edits from wiring pushHistory into the injected instruction.
+test('escalateOnPush: push commands never arm a review nor leak into the instruction', async () => {
+  const { apply } = await import('../lib/index.js')
+  const ctx = fakeCtx()
+  apply(ctx, { ...baseConfig, escalateOnPush: true })
+  const steered = []
+  const agent = { id: 'push-agent', steer: (m) => steered.push(m) }
+
+  // A push command alone must change nothing: it is not a write pattern, so no
+  // review is armed (escalation semantics belong to 3b-②, not this channel).
+  ctx.emit('tools/result', { name: 'bash', arguments: { command: 'git push origin main' }, agent })
+  ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.equal(steered.length, 0, 'a push alone still arms nothing')
+
+  // Once a real write arms the review, the recorded push must stay out of the
+  // injected instruction (it lives in pushHistory, not bashCommands).
+  ctx.emit('tools/result', { name: 'edit', arguments: { file_path: '/p/notes.txt' }, agent })
+  const listener = ctx.listeners.get('system-prompt/assemble')[0]
+  const assembly = { contexts: [], sections: [], tools: [], variables: {} }
+  const out = await listener(assembly, { agent }, async () => assembly)
+  const section = out.contexts.find((c) => c.name === 'review-gate')
+  assert.ok(section, 'the edit armed the review as before')
+  assert.equal(section.text.includes('git push origin main'), false, 'push history is never injected')
+})
+
 // ---- v3: signal layer (fs-intent), noise filter, milestone audit, cost meter ----
 
 // v5-T3: the fs/write-intent and fs/edit-intent tests were removed — the lane
@@ -1526,6 +1588,30 @@ test('review_gate_config: set with no keys lists available keys, writeTools excl
   const out = String(await tool.execute({ action: 'set' }))
   assert.ok(out.includes('未提供任何可设键'), 'empty set hints at available keys')
   assert.equal(out.includes('writeTools'), false, 'advanced internal knob stays off the tool face')
+})
+
+test('escalateOnPush: schema default is false and the config tool exposes the key', async () => {
+  const { apply, Config, readOverlay } = await import('../lib/index.js')
+  assert.equal(Config({}).escalateOnPush, false, 'recording is opt-in (default false)')
+  assert.equal(Config({ escalateOnPush: true }).escalateOnPush, true, 'the opt-in parses')
+  const receiptDir = join(_tmpdir(), 'rg-escalate-' + process.pid)
+  try {
+    const ctx = fakeCtx()
+    apply(ctx, { ...baseConfig, receiptDir })
+    const tool = getConfigTool(ctx)
+    const desc = tool.parameters.properties.escalateOnPush?.description ?? ''
+    assert.match(desc, /默认 false/, 'tool schema documents the default')
+    assert.match(desc, /记录/, 'tool schema says it records bash commands')
+    assert.match(desc, /push/i, 'tool schema names the purpose (push escalation)')
+    // Round-trip the set face: this is the only assertion that would catch a
+    // missing OVERLAY_KEYS entry (the key would be dropped and set would report
+    // "no settable keys" instead of applying).
+    const setOut = await tool.execute({ action: 'set', escalateOnPush: true })
+    assert.ok(String(setOut).includes('escalateOnPush=true'), 'the config tool applies the key')
+    assert.deepEqual(readOverlay(receiptDir), { escalateOnPush: true }, 'overlay carries the key')
+  } finally {
+    await fs.rm(receiptDir, { recursive: true, force: true })
+  }
 })
 
 // ---- M2 observation plane: GET ships live state counters + receipt stats ----
